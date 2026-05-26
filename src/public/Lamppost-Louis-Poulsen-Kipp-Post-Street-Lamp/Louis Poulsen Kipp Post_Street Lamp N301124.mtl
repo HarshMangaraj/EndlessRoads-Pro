@@ -1,0 +1,56 @@
+# 
+# Wavefront material file
+# Converted by the DEEP Exploration  Deep Exploration 6.3 x64 6.3.3.8069
+# Right Hemisphere, LTD
+# http://www.righthemisphere.com/
+# 
+
+newmtl Glass
+Ka 0.905882 0.905882 0.905882
+Kd 0.941177 0.913726 0.819608
+Ks 0.905882 0.905882 0.905882
+illum 2
+Ns 2048
+d 0.1
+map_Kd 
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Metal
+Ka 0.905882 0.905882 0.905882
+Kd 0.72549 0.72549 0.72549
+Ks 0.905882 0.905882 0.905882
+illum 2
+Ns 2048
+map_Kd 
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Lamp
+Ka 0.941177 0.913726 0.819608
+Kd 0.941177 0.913726 0.819608
+Ks 0.905882 0.905882 0.905882
+illum 2
+Ns 2048
+d 0.5
+map_Kd 
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
