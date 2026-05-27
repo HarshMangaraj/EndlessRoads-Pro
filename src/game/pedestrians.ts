@@ -12,9 +12,9 @@ import {
   ROAD_HALF,
 } from "./roadNetwork";
 
-export const PED_COUNT = 120;
+export const PED_COUNT = 80;
 
-type PedState = "walk" | "wait" | "cross";
+type PedState = "walk" | "cross";
 
 interface Pedestrian {
   gx: number;
@@ -26,10 +26,43 @@ interface Pedestrian {
   lane: -1 | 1;
   phase: number;
   state: PedState;
-  crossProgress: number;  // 0‥1 across road
-  crossFrom: number;      // world t where they started crossing
+  crossProgress: number;
   seed: number;
 }
+
+const createPedGeometry = (): THREE.BufferGeometry => {
+  const parts = [
+    { w: 0.38, h: 0.52, d: 0.22, ox: 0, oy: 0.68, oz: 0 },
+    { w: 0.24, h: 0.26, d: 0.22, ox: 0, oy: 1.12, oz: 0 },
+    { w: 0.14, h: 0.42, d: 0.14, ox: -0.1, oy: 0.21, oz: 0 },
+    { w: 0.14, h: 0.42, d: 0.14, ox: 0.1, oy: 0.21, oz: 0 },
+  ];
+  const posArr: number[] = [];
+  const normArr: number[] = [];
+  const idxArr: number[] = [];
+  let vOff = 0;
+
+  for (const p of parts) {
+    const g = new THREE.BoxGeometry(p.w, p.h, p.d);
+    g.computeVertexNormals();
+    const pos = g.attributes.position as THREE.BufferAttribute;
+    const norm = g.attributes.normal as THREE.BufferAttribute;
+    const idx = g.index!;
+    for (let i = 0; i < pos.count; i++) {
+      posArr.push(pos.getX(i) + p.ox, pos.getY(i) + p.oy, pos.getZ(i) + p.oz);
+      normArr.push(norm.getX(i), norm.getY(i), norm.getZ(i));
+    }
+    for (let i = 0; i < idx.count; i++) idxArr.push(idx.getX(i) + vOff);
+    vOff += pos.count;
+    g.dispose();
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute("position", new THREE.Float32BufferAttribute(posArr, 3));
+  merged.setAttribute("normal", new THREE.Float32BufferAttribute(normArr, 3));
+  merged.setIndex(idxArr);
+  return merged;
+};
 
 export interface PedestrianSystem {
   update: (px: number, pz: number, dt: number, timeSec: number) => void;
@@ -40,13 +73,16 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
   const group = new THREE.Group();
   scene.add(group);
 
-  const bodyGeo = new THREE.CapsuleGeometry(0.22, 0.55, 4, 8);
-  const headGeo = new THREE.SphereGeometry(0.2, 8, 8);
-  const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88 });
-  const walkers = new THREE.InstancedMesh(bodyGeo, bodyMat, PED_COUNT);
+  const pedGeo = createPedGeometry();
+  const pedMat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.82,
+    metalness: 0.05,
+  });
+  const walkers = new THREE.InstancedMesh(pedGeo, pedMat, PED_COUNT);
   walkers.castShadow = true;
-  const headMesh = new THREE.InstancedMesh(headGeo, bodyMat, PED_COUNT);
-  group.add(walkers, headMesh);
+  walkers.receiveShadow = true;
+  group.add(walkers);
 
   const colors = [
     0x8b3a3a, 0x3a5a8b, 0x3a6b4a, 0x6b5a3a, 0x5a3a6b, 0x2a2a2a, 0xc8c0b0, 0x4a4a52,
@@ -59,14 +95,13 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
   const peds: Pedestrian[] = Array.from({ length: PED_COUNT }, (_, i) => ({
     gx: 0, gz: 0,
     axis: hash(i * 3.1) > 0.5 ? "ns" : "ew" as "ns" | "ew",
-    t: (hash(i * 11) - 0.5) * BLOCK * 0.8,
-    speed: 0.9 + hash(i * 17) * 0.9,
+    t: (hash(i * 11) - 0.5) * BLOCK * 0.75,
+    speed: 0.85 + hash(i * 17) * 0.75,
     dir: hash(i * 19) > 0.5 ? 1 : -1 as 1 | -1,
     lane: hash(i * 23) > 0.5 ? 1 : -1 as -1 | 1,
     phase: hash(i * 29) * 10,
     state: "walk" as PedState,
     crossProgress: 0,
-    crossFrom: 0,
     seed: hash(i * 37),
   }));
 
@@ -83,63 +118,36 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
 
     for (let i = 0; i < peds.length && count < PED_COUNT; i++) {
       const p = peds[i];
-      // Assign grid block each frame (cycles each ped through a nearby block)
-      p.gx = baseGx + Math.round((hash(i * 7.1 + baseGx * 0.1) - 0.5) * 6);
-      p.gz = baseGz + Math.round((hash(i * 11.3 + baseGz * 0.1) - 0.5) * 6);
+      p.gx = baseGx + Math.round((hash(i * 7.1 + baseGx * 0.1) - 0.5) * 5);
+      p.gz = baseGz + Math.round((hash(i * 11.3 + baseGz * 0.1) - 0.5) * 5);
 
-      // Density culling: in suburbs, only show some peds
       const d = densityAt(p.gx, p.gz);
-      if (d < 0.3 && hash(i * 13.7 + baseGx) > d * 2.5) {
+      if (d < 0.28 && hash(i * 13.7 + baseGx) > d * 2.2) {
         walkers.setMatrixAt(count, hidden.matrix);
-        headMesh.setMatrixAt(count, hidden.matrix);
         count++;
         continue;
       }
 
-      // --- Pedestrian crossing logic ---
-      // Peds walk along sidewalk; when they near a junction, they check the light.
-      // If pedestrian phase (opposite to car green), they cross the road.
-
       const sidewalkLane = p.lane * SIDEWALK_OFF;
-      const junctionHalfPeriod = BLOCK * 0.48;
+      const junctionHalf = BLOCK * 0.46;
 
       if (p.state === "walk") {
         p.t += p.speed * dt * p.dir;
-
-        // Bounce within block
-        if (Math.abs(p.t) > junctionHalfPeriod) {
-          const junctionT = Math.sign(p.t) * junctionHalfPeriod;
-          // Check if we should cross here
-          const jGx = p.axis === "ns" ? p.gx : gridCoord(gridLineX(p.gx) + junctionT);
-          const jGz = p.axis === "ew" ? p.gz : gridCoord(gridLineZ(p.gz) + junctionT);
-          const lights = trafficLightState(jGx, jGz, timeSec);
-          // Pedestrians cross when the perpendicular road is red for cars
+        if (Math.abs(p.t) > junctionHalf) {
+          const lights = trafficLightState(p.gx, p.gz, timeSec);
           const pedCanCross = p.axis === "ns" ? !lights.nsGreen : !lights.ewGreen;
-
-          if (pedCanCross && hash(i * 5.3 + Math.floor(timeSec / 4)) > 0.4) {
-            // Start crossing
+          if (pedCanCross && hash(i * 5.3 + Math.floor(timeSec / 4)) > 0.45) {
             p.state = "cross";
             p.crossProgress = 0;
-            p.crossFrom = junctionT;
-            p.t = junctionT;
+            p.t = Math.sign(p.t) * junctionHalf;
           } else {
             p.dir = (-p.dir) as 1 | -1;
-            p.t = Math.sign(p.t) * (junctionHalfPeriod - 0.1);
+            p.t = Math.sign(p.t) * (junctionHalf - 0.5);
           }
-        }
-      } else if (p.state === "wait") {
-        // Re-check light
-        const jGx = p.gx, jGz = p.gz;
-        const lights = trafficLightState(jGx, jGz, timeSec);
-        const pedCanCross = p.axis === "ns" ? !lights.nsGreen : !lights.ewGreen;
-        if (pedCanCross) {
-          p.state = "cross";
-          p.crossProgress = 0;
         }
       } else if (p.state === "cross") {
         p.crossProgress += p.speed / (SIDEWALK_OFF * 2 + ROAD_HALF * 2) * dt;
         if (p.crossProgress >= 1) {
-          // Finished crossing — end up on the other side of the road, keep walking
           p.lane = (-p.lane) as -1 | 1;
           p.state = "walk";
           p.crossProgress = 0;
@@ -149,12 +157,9 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
       let wx: number, wz: number, heading: number;
 
       if (p.state === "cross") {
-        // Cross perpendicular to walking direction
         const crossStart = sidewalkLane;
-        const crossEnd   = -p.lane * SIDEWALK_OFF; // opposite side
-        const crossLerp  = p.crossProgress;
-        const crossOff   = crossStart + (crossEnd - crossStart) * crossLerp;
-
+        const crossEnd = -p.lane * SIDEWALK_OFF;
+        const crossOff = crossStart + (crossEnd - crossStart) * p.crossProgress;
         if (p.axis === "ns") {
           wx = gridLineX(p.gx) + crossOff;
           wz = gridLineZ(p.gz) + p.t;
@@ -176,45 +181,34 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
         }
       }
 
-      if (Math.hypot(wx - px, wz - pz) > 220) {
+      if (Math.hypot(wx - px, wz - pz) > 200) {
         walkers.setMatrixAt(count, hidden.matrix);
-        headMesh.setMatrixAt(count, hidden.matrix);
         count++;
         continue;
       }
 
       const gy = Math.max(0, terrainHeight(wx, wz));
-      const isMoving = p.state !== "wait";
-      const bob = isMoving ? Math.sin(time * 8 + p.phase) * 0.04 : 0;
+      const walkCycle = Math.sin(time * 7 + p.phase);
+      const bob = walkCycle * 0.02;
 
-      dummy.position.set(wx, gy + 0.72 + bob, wz);
-      dummy.rotation.set(0, heading, 0);
+      dummy.position.set(wx, gy + bob, wz);
+      dummy.rotation.set(walkCycle * 0.06, heading, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       walkers.setMatrixAt(count, dummy.matrix);
-      dummy.position.set(wx, gy + 1.35 + bob, wz);
-      dummy.updateMatrix();
-      headMesh.setMatrixAt(count, dummy.matrix);
       count++;
     }
 
-    for (let i = count; i < PED_COUNT; i++) {
-      walkers.setMatrixAt(i, hidden.matrix);
-      headMesh.setMatrixAt(i, hidden.matrix);
-    }
+    for (let i = count; i < PED_COUNT; i++) walkers.setMatrixAt(i, hidden.matrix);
     walkers.count = count;
-    headMesh.count = count;
     walkers.instanceMatrix.needsUpdate = true;
-    headMesh.instanceMatrix.needsUpdate = true;
     if (walkers.instanceColor) walkers.instanceColor.needsUpdate = true;
   };
 
   const dispose = () => {
-    bodyGeo.dispose();
-    headGeo.dispose();
-    bodyMat.dispose();
+    pedGeo.dispose();
+    pedMat.dispose();
     walkers.dispose();
-    headMesh.dispose();
     scene.remove(group);
   };
 

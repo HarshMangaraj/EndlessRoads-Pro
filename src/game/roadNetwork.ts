@@ -1,7 +1,20 @@
 import { hash } from "./noise";
+import { terrainHeight } from "./terrain";
 
 /** City block size — roads run on grid lines. */
 export const BLOCK = 80;
+export const ROAD_SURFACE_LIFT = 0.38;
+/** Wheel mesh center Y in car local space; radius 0.43. */
+export const CAR_WHEEL_LOCAL_Y = 0.38;
+export const CAR_WHEEL_RADIUS = 0.43;
+
+/** World Y of the top of the asphalt road mesh. */
+export const roadSurfaceY = (wx: number, wz: number): number =>
+  Math.max(0, terrainHeight(wx, wz)) + ROAD_SURFACE_LIFT;
+
+/** Car group origin so tire contact meets the road (local bottom = localY - radius). */
+export const carAnchorY = (wx: number, wz: number): number =>
+  roadSurfaceY(wx, wz) + (CAR_WHEEL_RADIUS - CAR_WHEEL_LOCAL_Y + 0.02);
 export const ROAD_HALF = 7.2;
 export const LANE_OFF = 3.0;
 export const SIDEWALK_OFF = 9.0;

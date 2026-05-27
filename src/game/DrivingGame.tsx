@@ -15,6 +15,8 @@ import {
   terrainHeight, biomeWeightsAt, dominantBiome,
   createPathState, getGroundColorAt, hash,
 } from "./terrain";
+import { carAnchorY, isOnRoad, isOnSidewalk, ROAD_HALF } from "./roadNetwork";
+import { resolveObstacleCollisions } from "./collisions";
 import { createCity } from "./city";
 import { createPostFx } from "./postfx";
 import { createGameAudio } from "./audio";
@@ -213,11 +215,19 @@ export default function DrivingGame() {
         const wz = pos.getZ(i) + tz * TILE_SIZE;
         const hy = Math.max(0, terrainHeight(wx, wz));
         pos.setY(i, hy);
-        const bw = biomeWeightsAt(wx, wz);
-        const gc = getGroundColorAt(wx, wz, hy, bw);
-        colors[i * 3]     = gc.r;
-        colors[i * 3 + 1] = gc.g;
-        colors[i * 3 + 2] = gc.b;
+        let r: number, g: number, b: number;
+        if (isOnRoad(wx, wz, ROAD_HALF + 1)) {
+          r = 0.14; g = 0.14; b = 0.15;
+        } else if (isOnSidewalk(wx, wz)) {
+          r = 0.22; g = 0.21; b = 0.20;
+        } else {
+          const bw = biomeWeightsAt(wx, wz);
+          const gc = getGroundColorAt(wx, wz, hy, bw);
+          r = gc.r; g = gc.g; b = gc.b;
+        }
+        colors[i * 3]     = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
       }
       geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       geo.computeVertexNormals();
@@ -617,17 +627,17 @@ export default function DrivingGame() {
     };
 
     // ── Lighting ──────────────────────────────────────────────────────────────
-    const ambLight  = new THREE.AmbientLight(0xc8d8ff, 0.22);
-    const hemiLight = new THREE.HemisphereLight(0x9ec4ff, 0x5a4a32, 0.62);
-    const dirLight  = new THREE.DirectionalLight(0xfff6e0, 3.8);
+    const ambLight  = new THREE.AmbientLight(0xc8d8ff, 0.38);
+    const hemiLight = new THREE.HemisphereLight(0x9ec4ff, 0x6a5a42, 0.78);
+    const dirLight  = new THREE.DirectionalLight(0xfff6e0, 2.6);
     dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(4096, 4096);
+    dirLight.shadow.mapSize.set(2048, 2048);
     dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -130;
     dirLight.shadow.camera.right = dirLight.shadow.camera.top  =  130;
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far  = 500;
-    dirLight.shadow.bias        = -0.00015;
-    dirLight.shadow.normalBias  = 0.04;
+    dirLight.shadow.bias        = -0.00008;
+    dirLight.shadow.normalBias  = 0.018;
 
     let city: ReturnType<typeof createCity> | null = null;
 
@@ -961,8 +971,8 @@ export default function DrivingGame() {
 
       vs.worldPos.x += Math.sin(vs.heading) * vs.speed * dt;
       vs.worldPos.z += Math.cos(vs.heading) * vs.speed * dt;
-      const gy = Math.max(0, terrainHeight(vs.worldPos.x, vs.worldPos.z));
-      vs.worldPos.y = gy + 0.38;
+
+      vs.worldPos.y = carAnchorY(vs.worldPos.x, vs.worldPos.z);
       setAnchor(vs.worldPos.x, vs.worldPos.z, vs.heading);
 
       // Weight transfer pitch (nose dips on brake, raises on gas)
@@ -994,7 +1004,7 @@ export default function DrivingGame() {
       let camDist   = 9.5 + Math.abs(vs.speed) * 0.15;
       let camFOV    = 62 + Math.min(12, spd * 0.1);
       if (camMode === "hood") {
-        camHeight = 1.05; camDist = -2.0; camFOV = 78;
+        camHeight = 1.38; camDist = -2.0; camFOV = 78;
       } else if (camMode === "cinematic") {
         camHeight = 5.5 + Math.abs(vs.speed) * 0.08; camDist = 16; camFOV = 50;
       }
@@ -1066,22 +1076,20 @@ export default function DrivingGame() {
         new THREE.Color(0xfff4e0),
         THREE.MathUtils.clamp(elev * 2.5 * warm, 0, 1),
       );
-      dirLight.intensity = daylight * 3.4 * overcast + flashAmt * 9;
+      dirLight.intensity = daylight * 2.5 * overcast + flashAmt * 9;
       dirLight.color.copy(sunColor);
       dirLight.position.set(vs.worldPos.x + sun.x * 100, Math.max(22, sun.y * 100), vs.worldPos.z + sun.z * 100);
       dirLight.target.position.copy(vs.worldPos); dirLight.target.updateMatrixWorld();
-      // At night: very dim ambient so scene is dark, not flat-lit green
-      ambLight.intensity  = 0.04 + daylight * 0.18 * overcast;
-      hemiLight.intensity = 0.08 + daylight * 0.44 * overcast;
-      const twilightBias = THREE.MathUtils.clamp(1 - Math.abs(elev) * 5, 0, 1);
-      // Night sky tint: very dark blue, ground almost black
-      hemiLight.color.set(new THREE.Color(0x9ec4ff).lerp(new THREE.Color(0xffb07a), twilightBias * daylight));
-      hemiLight.groundColor.set(new THREE.Color(0x080c10).lerp(new THREE.Color(0x5a4830), daylight));
-
       const nightFactor = THREE.MathUtils.clamp(1 - daylight * 1.6, 0, 1);
-      // Darken ground material at night — push towards near-black
-      groundMat.color = new THREE.Color().setScalar(THREE.MathUtils.lerp(1, 0.08, nightFactor));
-      cityNightLight.intensity = nightFactor * 0.12;
+      // Night: keep some ambient so lamp point lights can illuminate visible surfaces
+      ambLight.intensity  = 0.22 + daylight * 0.32 * overcast + nightFactor * 0.06;
+      hemiLight.intensity = 0.38 + daylight * 0.48 * overcast + nightFactor * 0.1;
+      const twilightBias = THREE.MathUtils.clamp(1 - Math.abs(elev) * 5, 0, 1);
+      hemiLight.color.set(new THREE.Color(0x9ec4ff).lerp(new THREE.Color(0xffb07a), twilightBias * daylight));
+      hemiLight.groundColor.set(new THREE.Color(0x101820).lerp(new THREE.Color(0x5a4830), daylight));
+
+      groundMat.color = new THREE.Color().setScalar(THREE.MathUtils.lerp(1, 0.42, nightFactor));
+      cityNightLight.intensity = nightFactor * 0.18;
       cityNightLight.color.set(new THREE.Color(0x1a2a40).lerp(new THREE.Color(0x3050a0), nightFactor * 0.5));
       cityNightLight.groundColor.set(new THREE.Color(0x080808));
 
@@ -1143,6 +1151,18 @@ export default function DrivingGame() {
 
       city?.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
       traffic.update(vs.worldPos.x, vs.worldPos.z, gameTimeSec, dt);
+
+      const poleHits = resolveObstacleCollisions(vs.worldPos.x, vs.worldPos.z, [
+        ...intersections.getObstacles(),
+        ...(city?.getObstacles() ?? []),
+      ]);
+      if (poleHits.hit) {
+        vs.worldPos.x = poleHits.x;
+        vs.worldPos.z = poleHits.z;
+        carGroup.position.x = poleHits.x;
+        carGroup.position.z = poleHits.z;
+        vs.speed *= Math.max(0.35, 1 - dt * 4);
+      }
 
       const rpmNow = Math.min(100, (Math.abs(vs.speed) / MAX_SPEED) * 100);
       gameAudio.update({

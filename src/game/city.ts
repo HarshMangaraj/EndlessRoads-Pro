@@ -3,6 +3,7 @@ import { hash } from "./noise";
 import { terrainHeight } from "./terrain";
 import type { PreparedModel } from "./assets";
 import { getActiveMap } from "./maps";
+import type { Obstacle } from "./collisions";
 import {
   BLOCK,
   SIDEWALK_OFF,
@@ -49,6 +50,7 @@ export interface CitySystem {
   windowMesh: THREE.InstancedMesh;
   streetlights: THREE.InstancedMesh;
   update: (px: number, pz: number, nightFactor: number) => void;
+  getObstacles: () => Obstacle[];
   setQuality: (q: QualityTier) => void;
   upgradeLamppost: (model: PreparedModel) => void;
   dispose: () => void;
@@ -123,18 +125,13 @@ export const createCity = (
   lightPools.frustumCulled = false;
   group.add(lightPools);
 
-  const lampLights: THREE.SpotLight[] = [];
-  const lampTargets: THREE.Object3D[] = [];
+  // Point lights actually illuminate road/trees/buildings (not just emissive pole glow)
+  const lampPoints: THREE.PointLight[] = [];
   for (let i = 0; i < LAMP_LIGHT_POOL; i++) {
-    const sl = new THREE.SpotLight(0xffe8b8, 0, 38, Math.PI * 0.48, 0.62, 1.4);
-    sl.castShadow = false;
-    sl.decay = 2;
-    const tgt = new THREE.Object3D();
-    scene.add(sl);
-    scene.add(tgt);
-    sl.target = tgt;
-    lampLights.push(sl);
-    lampTargets.push(tgt);
+    const pl = new THREE.PointLight(0xffe4b8, 0, 22, 1.5);
+    pl.castShadow = false;
+    scene.add(pl);
+    lampPoints.push(pl);
   }
 
   const dummy = new THREE.Object3D();
@@ -156,8 +153,8 @@ export const createCity = (
 
   const syncLampLights = (px: number, pz: number) => {
     if (nightFactorStored < 0.04) {
-      for (let i = 0; i < lampLights.length; i++) {
-        lampLights[i].intensity = 0;
+      for (let i = 0; i < lampPoints.length; i++) {
+        lampPoints[i].intensity = 0;
         dummy.position.set(px, -500, pz);
         dummy.scale.set(0, 0, 0);
         dummy.updateMatrix();
@@ -173,11 +170,12 @@ export const createCity = (
       .sort((a, b) => a.dist - b.dist);
 
     const poolCount = Math.min(lightPoolSize, sorted.length);
-    const intensity = nightFactorStored * (qualityTier === "ultra" ? 6 : qualityTier === "high" ? 5 : 4);
+    const baseI = qualityTier === "ultra" ? 26 : qualityTier === "high" ? 22 : 16;
+    const intensity = baseI * nightFactorStored;
 
-    for (let i = 0; i < lampLights.length; i++) {
+    for (let i = 0; i < lampPoints.length; i++) {
       if (i >= poolCount) {
-        lampLights[i].intensity = 0;
+        lampPoints[i].intensity = 0;
         dummy.position.set(px, -500, pz);
         dummy.scale.set(0, 0, 0);
         dummy.updateMatrix();
@@ -187,27 +185,27 @@ export const createCity = (
 
       const lamp = sorted[i];
       const lx = lamp.x;
-      const ly = lamp.y + 4.85;
+      const ly = lamp.y + 4.6;
       const lz = lamp.z;
       const fwdX = Math.sin(lamp.heading);
       const fwdZ = Math.cos(lamp.heading);
-      const bulbX = lx + fwdX * 0.55;
-      const bulbZ = lz + fwdZ * 0.55;
+      const bulbX = lx + fwdX * 0.45;
+      const bulbZ = lz + fwdZ * 0.45;
 
-      lampLights[i].position.set(bulbX, ly, bulbZ);
-      lampTargets[i].position.set(bulbX + fwdX * 2, lamp.y + 0.15, bulbZ + fwdZ * 2);
-      lampLights[i].intensity = intensity;
+      lampPoints[i].position.set(bulbX, ly, bulbZ);
+      lampPoints[i].intensity = intensity;
+      lampPoints[i].distance = 26 + nightFactorStored * 8;
 
-      const poolScale = 9 + nightFactorStored * 4;
-      dummy.position.set(bulbX + fwdX * 1.2, lamp.y + 0.04, bulbZ + fwdZ * 1.2);
+      const poolScale = 4 + nightFactorStored * 2.5;
+      dummy.position.set(bulbX, lamp.y + 0.06, bulbZ);
       dummy.rotation.set(0, lamp.heading, 0);
       dummy.scale.set(poolScale, poolScale, 1);
       dummy.updateMatrix();
       lightPools.setMatrixAt(i, dummy.matrix);
     }
 
-    for (let i = poolCount; i < lampLights.length; i++) {
-      lampLights[i].intensity = 0;
+    for (let i = poolCount; i < lampPoints.length; i++) {
+      lampPoints[i].intensity = 0;
       dummy.position.set(px, -500, pz);
       dummy.scale.set(0, 0, 0);
       dummy.updateMatrix();
@@ -215,7 +213,7 @@ export const createCity = (
     }
     lightPools.count = poolCount;
     lightPools.instanceMatrix.needsUpdate = true;
-    poolMat.opacity = 0.25 + nightFactorStored * 0.2;
+    poolMat.opacity = 0.18 + nightFactorStored * 0.22;
   };
 
   const placeWindowGrid = (
@@ -405,10 +403,9 @@ export const createCity = (
   };
 
   const dispose = () => {
-    for (const sl of lampLights) {
-      scene.remove(sl);
-      scene.remove(sl.target);
-      sl.dispose();
+    for (const pl of lampPoints) {
+      scene.remove(pl);
+      pl.dispose();
     }
     poolTex.dispose();
     poolMat.dispose();
@@ -428,12 +425,16 @@ export const createCity = (
     scene.remove(group);
   };
 
+  const getObstacles = (): Obstacle[] =>
+    lampRecords.map((r) => ({ x: r.x, z: r.z, r: 0.42 }));
+
   return {
     group,
     buildingMesh,
     windowMesh,
     streetlights,
     update,
+    getObstacles,
     setQuality,
     upgradeLamppost,
     dispose,
