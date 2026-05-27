@@ -1,7 +1,8 @@
 import React, { useRef, useImperativeHandle, forwardRef } from "react";
+import { BLOCK, gridCoord, gridLineX, gridLineZ } from "../game/roadNetwork";
 
 export interface MinimapHandle {
-  draw: (worldX: number, worldZ: number, carS: number, samplePath: (s: number) => { x: number; z: number }) => void;
+  draw: (worldX: number, worldZ: number, heading: number) => void;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -14,65 +15,71 @@ const panelStyle: React.CSSProperties = {
   padding: 10,
 };
 
+const SIZE = 130;
+const SCALE = 0.28;
+
 const Minimap = forwardRef<MinimapHandle>((_, ref) => {
-  const canvasRef  = useRef<HTMLCanvasElement>(null);
-  const historyRef = useRef<{ x: number; z: number }[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useImperativeHandle(ref, () => ({
-    draw(worldX, worldZ, carS, samplePath) {
+    draw(worldX, worldZ, heading) {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      historyRef.current.push({ x: worldX, z: worldZ });
-      if (historyRef.current.length > 600) historyRef.current.shift();
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.fillRect(0, 0, SIZE, SIZE);
 
-      const W2 = 130, H2 = 130, sc = 0.17;
-      ctx.clearRect(0, 0, W2, H2);
+      const half = SIZE / 2;
+      const gx0 = gridCoord(worldX) - 3;
+      const gx1 = gridCoord(worldX) + 3;
+      const gz0 = gridCoord(worldZ) - 3;
+      const gz1 = gridCoord(worldZ) + 3;
+      const roadW = BLOCK * SCALE * 0.14;
 
-      ctx.fillStyle = "rgba(0,0,0,.5)";
-      ctx.fillRect(0, 0, W2, H2);
-
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(255,255,255,.45)";
-      ctx.lineWidth   = 2;
-      for (let ds = 0; ds < 350; ds += 5) {
-        const p  = samplePath(carS + ds);
-        const sx = W2 / 2 + (p.x - worldX) * sc;
-        const sy = H2 / 2 + (p.z - worldZ) * sc;
-        ds === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+      // Draw N-S road strips
+      ctx.fillStyle = "rgba(80,82,90,.95)";
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const rx = half + (gridLineX(gx) - worldX) * SCALE - roadW * 0.5;
+        const ry = 0;
+        ctx.fillRect(rx, ry, roadW, SIZE);
       }
-      ctx.stroke();
+      // Draw E-W road strips
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const ry = half + (gridLineZ(gz) - worldZ) * SCALE - roadW * 0.5;
+        ctx.fillRect(0, ry, SIZE, roadW);
+      }
 
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(120,180,255,.38)";
-      ctx.lineWidth   = 1.5;
-      historyRef.current.forEach((p, i) => {
-        const sx = W2 / 2 + (p.x - worldX) * sc;
-        const sy = H2 / 2 + (p.z - worldZ) * sc;
-        i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-      });
-      ctx.stroke();
-
-      ctx.beginPath();
+      // Direction arrow pointing heading
+      ctx.save();
+      ctx.translate(half, half);
+      ctx.rotate(-heading);
       ctx.fillStyle = "#f87171";
       ctx.shadowColor = "#f87171";
-      ctx.shadowBlur  = 6;
-      ctx.arc(W2 / 2, H2 / 2, 5, 0, Math.PI * 2);
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(0, -8);
+      ctx.lineTo(5, 5);
+      ctx.lineTo(0, 2);
+      ctx.lineTo(-5, 5);
+      ctx.closePath();
       ctx.fill();
       ctx.shadowBlur = 0;
+      ctx.restore();
 
+      // N label
       ctx.fillStyle = "rgba(255,255,255,.55)";
-      ctx.font      = "10px monospace";
+      ctx.font = "10px monospace";
       ctx.textAlign = "center";
-      ctx.fillText("N", W2 / 2, 13);
+      ctx.fillText("N", half, 13);
     },
   }));
 
   return (
     <div style={{ position: "absolute", top: 18, right: 18, zIndex: 10, ...panelStyle }}>
-      <canvas ref={canvasRef} width={130} height={130} style={{ display: "block", borderRadius: 12 }} />
+      <canvas ref={canvasRef} width={SIZE} height={SIZE} style={{ display: "block", borderRadius: 12 }} />
     </div>
   );
 });

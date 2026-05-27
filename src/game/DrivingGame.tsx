@@ -16,6 +16,11 @@ import {
   createPathState, getGroundColorAt, hash,
 } from "./terrain";
 import { createCity } from "./city";
+import { createPostFx } from "./postfx";
+import { createGameAudio } from "./audio";
+import { createRoadRenderer } from "./roads";
+import { createIntersections } from "./intersections";
+import { createPedestrians } from "./pedestrians";
 import { createTraffic } from "./traffic";
 import { createStarterAssets, loadHdLamppost, type QualityTier } from "./assets";
 import { createVegetation } from "./vegetation";
@@ -49,6 +54,8 @@ export default function DrivingGame() {
   const [carColor,     setCarColor]     = useState<CarColorId>("crimson");
   const [mapId,        setMapId]        = useState<MapId>("forest");
   const [worldLoading, setWorldLoading] = useState(false);
+  const [audioReady, setAudioReady] = useState(false);
+  const [audioMuted, setAudioMuted] = useState(false);
 
   const weatherRef      = useRef("sunny");
   const timeRef         = useRef(0.25);
@@ -95,10 +102,28 @@ export default function DrivingGame() {
     autoTimeRef.current = v;
   }, []);
 
+  const audioRef = useRef<ReturnType<typeof createGameAudio> | null>(null);
+
+  const enableAudio = useCallback(async () => {
+    if (!audioRef.current) return;
+    await audioRef.current.unlock();
+    setAudioReady(true);
+  }, []);
+
+  const toggleAudioMute = useCallback(() => {
+    setAudioMuted(m => {
+      const next = !m;
+      audioRef.current?.setMuted(next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!mountRef.current) return;
     const mount = mountRef.current;
     let cancelled = false;
+    setAudioReady(false);
+    audioRef.current = null;
     setActiveMap(mapId);
     setWorldLoading(false);
     setCurrentBiome(getActiveMap().displayBiome);
@@ -112,7 +137,11 @@ export default function DrivingGame() {
     // ── Renderer ──────────────────────────────────────────────────────────────
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        powerPreference: "high-performance",
+        alpha: false,
+      });
     } catch {
       const msg = document.createElement("div");
       msg.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;background:#000;text-align:center;padding:24px;";
@@ -127,11 +156,18 @@ export default function DrivingGame() {
     renderer.toneMapping       = THREE.ACESFilmicToneMapping;
     const mapInit = getActiveMap();
     renderer.toneMappingExposure = mapInit.exposure;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(mapInit.fogColor, 1);
     renderer.domElement.style.display = "block";
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     mount.appendChild(renderer.domElement);
+
+    const unlockOnPointer = () => {
+      if (cancelled || !audioRef.current) return;
+      void audioRef.current.unlock().then(() => { if (!cancelled) setAudioReady(true); });
+    };
+    mount.addEventListener("pointerdown", unlockOnPointer);
 
     const scene  = new THREE.Scene();
     scene.background = new THREE.Color(mapInit.fogColor);
@@ -140,17 +176,21 @@ export default function DrivingGame() {
     const camera = new THREE.PerspectiveCamera(62, W() / H(), 0.5, 2500);
     camera.position.set(0, 5, -11);
 
+    // postFx declared here so onResize can reference it (assigned later after scene/lights exist)
+    let postFxRef: ReturnType<typeof createPostFx> | null = null;
+
     const onResize = () => {
       const w = Math.max(1, W());
       const h = Math.max(1, H());
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      postFxRef?.setSize(w, h);
     };
     window.addEventListener("resize", onResize);
 
     // ── Path state ────────────────────────────────────────────────────────────
-    const { ensurePath, samplePath, isNearRoad, normalFromH } = createPathState();
+    const { ensurePath, samplePath, normalFromH, isNearRoad, setAnchor } = createPathState();
 
     // ── Ground tiles ──────────────────────────────────────────────────────────
     const groundTiles: { mesh: THREE.Mesh; tx: number; tz: number }[] = [];
@@ -227,7 +267,7 @@ export default function DrivingGame() {
       });
     };
 
-    ensurePath(600);
+    ensurePath(1200);
     updateGroundTiles(0, 0);
 
     // ── Sea plane ─────────────────────────────────────────────────────────────
@@ -280,11 +320,15 @@ export default function DrivingGame() {
       color: 0xffffff, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.06, roughness: 0.75,
     });
 
-    scene.add(new THREE.Mesh(shoulderGeo, shoulderMat));
-    scene.add(new THREE.Mesh(roadGeo, roadMat));
-    scene.add(new THREE.Mesh(clGeo, clMat));
-    scene.add(new THREE.Mesh(laneGeoL, laneMat));
-    scene.add(new THREE.Mesh(laneGeoR, laneMat));
+    // Old spline-road meshes kept for disposal but hidden — grid road renderer takes over
+    const oldRoadMeshes = [
+      new THREE.Mesh(shoulderGeo, shoulderMat),
+      new THREE.Mesh(roadGeo, roadMat),
+      new THREE.Mesh(clGeo, clMat),
+      new THREE.Mesh(laneGeoL, laneMat),
+      new THREE.Mesh(laneGeoR, laneMat),
+    ];
+    oldRoadMeshes.forEach(m => { m.visible = false; scene.add(m); });
 
     const updateRoad = (vs: VehicleState) => {
       const start = vs.s - 40;
@@ -344,8 +388,10 @@ export default function DrivingGame() {
       return g;
     };
     const railGeoL = makeRailGeo(), railGeoR = makeRailGeo();
-    scene.add(new THREE.Mesh(railGeoL, railMat));
-    scene.add(new THREE.Mesh(railGeoR, railMat));
+    const railMeshL = new THREE.Mesh(railGeoL, railMat);
+    const railMeshR = new THREE.Mesh(railGeoR, railMat);
+    railMeshL.visible = false; railMeshR.visible = false;
+    scene.add(railMeshL); scene.add(railMeshR);
 
     const updateGuardrails = (vs: VehicleState) => {
       const start = vs.s - 20;
@@ -583,6 +629,8 @@ export default function DrivingGame() {
     dirLight.shadow.bias        = -0.00015;
     dirLight.shadow.normalBias  = 0.04;
 
+    let city: ReturnType<typeof createCity> | null = null;
+
     const applyQualitySettings = (q: QualityTier) => {
       const pr = q === "low" ? 1 : q === "medium" ? 1.25 : q === "high" ? 1.5 : 2;
       renderer.setPixelRatio(Math.min(devicePixelRatio, pr));
@@ -592,11 +640,23 @@ export default function DrivingGame() {
       dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -ext;
       dirLight.shadow.camera.right = dirLight.shadow.camera.top = ext;
       tileRes = tileResForQuality(q);
+      city?.setQuality(q);
     };
     applyQualitySettings(qualityRef.current);
 
     scene.add(ambLight); scene.add(hemiLight);
     scene.add(dirLight); scene.add(dirLight.target);
+
+    const cityNightLight = new THREE.HemisphereLight(0x3a5080, 0x1a1408, 0);
+    scene.add(cityNightLight);
+
+    const initW = Math.max(1, W());
+    const initH = Math.max(1, H());
+    const useBloom = qualityRef.current !== "low";
+    let postFx = createPostFx(renderer, scene, camera, initW, initH, mapInit.bloomStrength, useBloom);
+    postFxRef = postFx;
+    const gameAudio = createGameAudio();
+    audioRef.current = gameAudio;
 
     const headL = new THREE.SpotLight(0xfff4cc, 0, 90, 0.52, 0.38, 1.2);
     const headR = new THREE.SpotLight(0xfff4cc, 0, 90, 0.52, 0.38, 1.2);
@@ -680,15 +740,18 @@ export default function DrivingGame() {
 
     // ── Car ───────────────────────────────────────────────────────────────────
     interface VehicleState {
-      s: number; speed: number; lateral: number; yaw: number;
+      s: number; speed: number; wheelAngle: number;
       worldPos: THREE.Vector3; heading: number; gear: number;
       pitch: number; slipAngle: number;
     }
     const vs: VehicleState = {
-      s: 0, speed: 0, lateral: 0, yaw: 0,
-      worldPos: new THREE.Vector3(), heading: 0, gear: 1,
+      s: 0, speed: 0, wheelAngle: 0,
+      worldPos: new THREE.Vector3(0, 0.5, 0), heading: 0, gear: 1,
       pitch: 0, slipAngle: 0,
     };
+    const MAX_STEER = 0.52;
+    const WHEEL_BASE = 2.65;
+    let gameTimeSec = 0;
     const camPos    = new THREE.Vector3(0, 5, -11);
     const camTarget = new THREE.Vector3();
     const carGroup  = new THREE.Group();
@@ -761,10 +824,12 @@ export default function DrivingGame() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup",   onKeyUp);
 
-    let city: ReturnType<typeof createCity> | null = null;
     let vegetation: ReturnType<typeof createVegetation> | null = null;
     const peaks = createDistantPeaks(scene);
     const traffic = createTraffic(scene);
+    const roadRenderer = createRoadRenderer(scene);
+    const intersections = createIntersections(scene);
+    const pedestrians = createPedestrians(scene);
 
     let flashAmt = 0, nextFlash = 3 + Math.random() * 6;
     let wheelRot = 0;
@@ -776,9 +841,10 @@ export default function DrivingGame() {
         scene, starter, qualityRef.current, VEG_RADIUS, VEG_CELL, TWO_PI,
       );
       city = createCity(scene, starter.lamppost);
+      city.setQuality(qualityRef.current);
 
       vegetation.update(0, 0, 0, isNearRoad);
-      city.update(0, 0, samplePath, 0, 0.35);
+      city.update(0, 0, 0.35);
       peaks.update(0, 0);
 
       if (qualityRef.current === "high" || qualityRef.current === "ultra") {
@@ -809,7 +875,7 @@ export default function DrivingGame() {
       const dt = Math.min((now - lastTime) * 0.001, 0.05);
       lastTime = now;
       if (dt <= 0) {
-        renderer.render(scene, camera);
+        postFx.render();
         return;
       }
 
@@ -821,13 +887,14 @@ export default function DrivingGame() {
       }
 
       if (pausedRef.current) {
-        renderer.render(scene, camera);
+        postFx.render();
         return;
       }
 
       if (resetRef.current) {
         resetRef.current = false;
-        vs.s = 0; vs.speed = 0; vs.lateral = 0; vs.yaw = 0; vs.slipAngle = 0;
+        vs.s = 0; vs.speed = 0; vs.wheelAngle = 0; vs.slipAngle = 0;
+      vs.heading = 0; vs.worldPos.set(0, 0.5, 0);
       }
 
       const wx = weatherRef.current;
@@ -864,30 +931,39 @@ export default function DrivingGame() {
       // Gear
       vs.gear = spd < 8 ? 1 : spd < 22 ? 2 : spd < 42 ? 3 : spd < 68 ? 4 : spd < 98 ? 5 : 6;
 
-      vs.s += vs.speed * dt;
-      if (vs.s < 0) vs.s = 0;
-      ensurePath(vs.s + 900);
+      vs.s += Math.abs(vs.speed) * dt;
+      gameTimeSec += dt;
 
-      // Steering — speed-sensitive (less at high speed)
-      const steer   = (leftOn ? 1 : 0) - (rightOn ? 1 : 0);
-      const sfBase  = Math.min(1, Math.abs(vs.speed) / 6);
-      const sfHigh  = 1 - Math.min(0.55, spd / (MAX_SPEED * 3.6));
-      const sf      = sfBase * sfHigh;
+      const steerInput = (leftOn ? 1 : 0) - (rightOn ? 1 : 0);
 
-      // Handbrake adds slip angle (rear-wheel slide feel)
-      const slipTarget = spaceOn ? steer * 0.35 : 0;
-      vs.slipAngle += (slipTarget - vs.slipAngle) * dt * 4;
+      // Speed-sensitive steering: full lock at low speed, reduced at highway speeds
+      const spdNorm = Math.min(1, spd / (MAX_SPEED * 3.6));
+      const steerMult = 1 - spdNorm * 0.55; // 100% low-speed → 45% at top
+      const steerTarget = steerInput * MAX_STEER * steerMult;
+      const steerSpeed = spaceOn ? 6.5 : 4.5;
+      vs.wheelAngle += (steerTarget - vs.wheelAngle) * steerSpeed * dt;
+      if (steerInput === 0) vs.wheelAngle *= 1 - Math.min(1, dt * 5.5);
 
-      vs.lateral += steer * sf * 4.5 * dt;
-      vs.lateral += -vs.lateral * 0.38 * dt;
-      vs.lateral  = Math.max(-(RW + 4), Math.min(RW + 4, vs.lateral));
+      // Ackermann-inspired turn rate with traction saturation
+      const rawTurnRate = Math.tan(vs.wheelAngle) * vs.speed / WHEEL_BASE;
 
-      const samp = samplePath(vs.s);
-      const n    = normalFromH(samp.h);
-      const gy   = Math.max(0, terrainHeight(samp.x + n.x * vs.lateral, samp.z + n.z * vs.lateral));
-      vs.worldPos.set(samp.x + n.x * vs.lateral, gy + 0.38, samp.z + n.z * vs.lateral);
-      vs.heading = samp.h;
-      vs.yaw     = steer * sf * 0.28;
+      // Slip angle physics: handbrake builds slip; speed cures it; counter-steer damps it
+      const slipBuild   = spaceOn ? steerInput * 0.55 * Math.sign(vs.speed) : 0;
+      const slipDecay   = vs.slipAngle * (spd > 5 ? 3.8 : 1.5);     // speed-dependent grip
+      const counterSteer = -vs.slipAngle * 1.8 * (steerInput === 0 ? 1 : 0.4); // auto countersteer
+      vs.slipAngle += (slipBuild - slipDecay + counterSteer * spdNorm) * dt;
+      vs.slipAngle  = Math.max(-0.6, Math.min(0.6, vs.slipAngle));
+
+      // Traction ellipse: lateral grip degrades near slip limit
+      const tractionMult = Math.max(0.05, 1 - Math.abs(vs.slipAngle) * 1.4);
+      const turnRate = rawTurnRate * tractionMult;
+      vs.heading += (turnRate + vs.slipAngle * 0.22) * dt;
+
+      vs.worldPos.x += Math.sin(vs.heading) * vs.speed * dt;
+      vs.worldPos.z += Math.cos(vs.heading) * vs.speed * dt;
+      const gy = Math.max(0, terrainHeight(vs.worldPos.x, vs.worldPos.z));
+      vs.worldPos.y = gy + 0.38;
+      setAnchor(vs.worldPos.x, vs.worldPos.z, vs.heading);
 
       // Weight transfer pitch (nose dips on brake, raises on gas)
       const pitchTarget = (brakeOn ? 0.06 : gasOn ? -0.04 : 0) + (spaceOn ? 0.03 : 0);
@@ -902,18 +978,18 @@ export default function DrivingGame() {
       suspBounce += suspVel;
 
       carGroup.position.copy(vs.worldPos); carGroup.position.y += suspBounce;
-      carGroup.rotation.y = samp.h + vs.yaw + vs.slipAngle;
+      carGroup.rotation.y = vs.heading + vs.slipAngle;
       carGroup.rotation.x = suspPitch;
 
       wheelRot += vs.speed * dt * 0.72;
       wheels.forEach((w, i) => {
         w.rotation.x   = wheelRot; rims[i].rotation.x = wheelRot;
-        if (i < 2) { w.rotation.y = -vs.yaw * 2.4; rims[i].rotation.y = -vs.yaw * 2.4; }
+        if (i < 2) { w.rotation.y = -vs.wheelAngle * 2.2; rims[i].rotation.y = -vs.wheelAngle * 2.2; }
       });
 
       // ── Camera ───────────────────────────────────────────────────────────
       const camMode = cameraModeRef.current;
-      const camH    = samp.h + vs.yaw * 0.38;
+      const camH    = vs.heading;
       let camHeight = 3.6 + Math.abs(vs.speed) * 0.06;
       let camDist   = 9.5 + Math.abs(vs.speed) * 0.15;
       let camFOV    = 62 + Math.min(12, spd * 0.1);
@@ -934,7 +1010,8 @@ export default function DrivingGame() {
       camPos.lerp(desired, Math.min(1, dt * (camMode === "hood" ? 12 : 5.2)));
       camera.position.copy(camPos);
 
-      const la = samplePath(vs.s + (camMode === "cinematic" ? 32 : 18));
+      const lookDist = camMode === "cinematic" ? 32 : 18;
+      const la = samplePath(lookDist);
       camTarget.lerp(new THREE.Vector3(la.x, vs.worldPos.y + 1.2, la.z), Math.min(1, dt * 8));
       camera.lookAt(camTarget);
 
@@ -993,17 +1070,32 @@ export default function DrivingGame() {
       dirLight.color.copy(sunColor);
       dirLight.position.set(vs.worldPos.x + sun.x * 100, Math.max(22, sun.y * 100), vs.worldPos.z + sun.z * 100);
       dirLight.target.position.copy(vs.worldPos); dirLight.target.updateMatrixWorld();
-      ambLight.intensity  = 0.06 + daylight * 0.18 * overcast;
-      hemiLight.intensity = 0.30 + daylight * 0.48 * overcast;
-      // Hemi sky colour shifts warmer at sunrise/sunset
+      // At night: very dim ambient so scene is dark, not flat-lit green
+      ambLight.intensity  = 0.04 + daylight * 0.18 * overcast;
+      hemiLight.intensity = 0.08 + daylight * 0.44 * overcast;
       const twilightBias = THREE.MathUtils.clamp(1 - Math.abs(elev) * 5, 0, 1);
+      // Night sky tint: very dark blue, ground almost black
       hemiLight.color.set(new THREE.Color(0x9ec4ff).lerp(new THREE.Color(0xffb07a), twilightBias * daylight));
-      hemiLight.groundColor.set(new THREE.Color(0x4a3c28).lerp(new THREE.Color(0x6b4a28), daylight));
+      hemiLight.groundColor.set(new THREE.Color(0x080c10).lerp(new THREE.Color(0x5a4830), daylight));
 
-      // Road wetness: shiny road in rain
+      const nightFactor = THREE.MathUtils.clamp(1 - daylight * 1.6, 0, 1);
+      // Darken ground material at night — push towards near-black
+      groundMat.color = new THREE.Color().setScalar(THREE.MathUtils.lerp(1, 0.08, nightFactor));
+      cityNightLight.intensity = nightFactor * 0.12;
+      cityNightLight.color.set(new THREE.Color(0x1a2a40).lerp(new THREE.Color(0x3050a0), nightFactor * 0.5));
+      cityNightLight.groundColor.set(new THREE.Color(0x080808));
+
+      const bloomNight = map.bloomStrength;
+      postFx.setBloom(bloomNight, nightFactor);
+
+      // Road wetness: shiny road in rain — brighter under street lamps at night
       const isWet = wx === "rain" || wx === "thunder";
-      (roadMat as THREE.MeshStandardMaterial).roughness  += (( isWet ? 0.18 : 0.78) - (roadMat as THREE.MeshStandardMaterial).roughness)  * dt * 1.8;
-      (roadMat as THREE.MeshStandardMaterial).metalness  += (( isWet ? 0.52 : 0.08) - (roadMat as THREE.MeshStandardMaterial).metalness)  * dt * 1.8;
+      const nightWetRough = isWet ? 0.18 : nightFactor > 0.4 ? 0.42 : 0.78;
+      const nightWetMetal = isWet ? 0.52 : nightFactor > 0.4 ? 0.28 : 0.08;
+      (roadMat as THREE.MeshStandardMaterial).roughness  += (nightWetRough - (roadMat as THREE.MeshStandardMaterial).roughness)  * dt * 1.8;
+      (roadMat as THREE.MeshStandardMaterial).metalness  += (nightWetMetal - (roadMat as THREE.MeshStandardMaterial).metalness)  * dt * 1.8;
+      (clMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.1 + nightFactor * 0.35;
+      (laneMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.06 + nightFactor * 0.22;
 
       const fogExp    = scene.fog as THREE.FogExp2;
       const fogBase   = wx === "rain" || wx === "thunder" ? 0.016 : wx === "cloudy" ? 0.009 : map.fogDensity;
@@ -1039,7 +1131,9 @@ export default function DrivingGame() {
       }
 
       // World updates
-      updateRoad(vs); updateGuardrails(vs);
+      roadRenderer.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
+      intersections.update(vs.worldPos.x, vs.worldPos.z, gameTimeSec);
+      pedestrians.update(vs.worldPos.x, vs.worldPos.z, dt, gameTimeSec);
       updateGroundTiles(vs.worldPos.x, vs.worldPos.z);
       peaks.update(vs.worldPos.x, vs.worldPos.z);
       vegetation?.update(vs.worldPos.x, vs.worldPos.z, vs.s, isNearRoad);
@@ -1047,9 +1141,23 @@ export default function DrivingGame() {
       updateRain(vs, wx, dt);
       updateSnow(vs, bw, dt);
 
-      const nightFactor = THREE.MathUtils.clamp(1 - daylight * 1.6, 0, 1);
-      city?.update(vs.worldPos.x, vs.worldPos.z, samplePath, vs.s, nightFactor);
-      traffic.update(vs.s, samplePath, dt);
+      city?.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
+      traffic.update(vs.worldPos.x, vs.worldPos.z, gameTimeSec, dt);
+
+      const rpmNow = Math.min(100, (Math.abs(vs.speed) / MAX_SPEED) * 100);
+      gameAudio.update({
+        speedKmh: Math.abs(vs.speed) * 3.6,
+        rpm: rpmNow,
+        weather: wx,
+        mapId: mapIdRef.current,
+        nightFactor,
+        headlightsOn: hlOn,
+        playerX: vs.worldPos.x,
+        playerZ: vs.worldPos.z,
+        traffic: traffic.getPositions(),
+        dt,
+        thunderFlash: flashAmt,
+      });
 
       if (map.displayBiome !== lastBiomeRef.current) {
         lastBiomeRef.current = map.displayBiome;
@@ -1068,26 +1176,30 @@ export default function DrivingGame() {
       setRpm(rpmVal);
       setGear(vs.speed < -0.5 ? "R" : vs.speed < 0.5 ? "N" : String(vs.gear));
 
-      // Minimap
-      minimapRef.current?.draw(vs.worldPos.x, vs.worldPos.z, vs.s, s => {
-        const p = samplePath(s);
-        return { x: p.x, z: p.z };
-      });
+      // Minimap — draw road grid around player
+      minimapRef.current?.draw(vs.worldPos.x, vs.worldPos.z, vs.heading);
 
-      renderer.render(scene, camera);
+      postFx.render();
     };
 
     animId = requestAnimationFrame(t => { lastTime = t; animate(t); });
 
     return () => {
       cancelled = true;
+      audioRef.current = null;
       cancelAnimationFrame(animId);
       window.removeEventListener("resize",  onResize);
+      mount.removeEventListener("pointerdown", unlockOnPointer);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup",   onKeyUp);
       vegetation?.dispose();
       city?.dispose();
       peaks.dispose();
+      roadRenderer.dispose();
+      intersections.dispose();
+      pedestrians.dispose();
+      postFx.dispose();
+      gameAudio.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -1140,6 +1252,25 @@ export default function DrivingGame() {
         background: "radial-gradient(ellipse at center, transparent 62%, rgba(0,0,0,.28) 100%)",
       }} />
 
+      {!audioReady && !worldLoading && (
+        <button
+          type="button"
+          onClick={() => { void enableAudio(); }}
+          style={{
+            position: "absolute", bottom: 100, left: "50%", transform: "translateX(-50%)",
+            zIndex: 45, pointerEvents: "auto",
+            padding: "12px 28px", borderRadius: 999,
+            border: "1px solid rgba(255,255,255,.25)",
+            background: "rgba(8,12,20,.88)", color: "#fff",
+            fontSize: 13, letterSpacing: "0.08em", cursor: "pointer",
+            fontFamily: "inherit", backdropFilter: "blur(16px)",
+            boxShadow: "0 8px 32px rgba(0,0,0,.5)",
+          }}
+        >
+          Tap to enable sound & graphics
+        </button>
+      )}
+
       <HUD
         speed={speed} rpm={rpm} gear={gear} weather={weather}
         timeDisplay={timeDisplay} isNight={isNight} timeOfDay={timeOfDay} autoTime={autoTime}
@@ -1147,6 +1278,8 @@ export default function DrivingGame() {
         onWeatherChange={handleWeather}
         onTimeChange={handleTimeChange}
         onAutoTimeChange={handleAutoTimeChange}
+        audioMuted={audioMuted}
+        onToggleMute={audioReady ? toggleAudioMute : undefined}
       />
 
       <Minimap ref={minimapRef} />

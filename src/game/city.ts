@@ -3,22 +3,53 @@ import { hash } from "./noise";
 import { terrainHeight } from "./terrain";
 import type { PreparedModel } from "./assets";
 import { getActiveMap } from "./maps";
+import {
+  BLOCK,
+  SIDEWALK_OFF,
+  gridCoord,
+  gridLineX,
+  gridLineZ,
+} from "./roadNetwork";
 
 export const BUILDING_COUNT = 260;
 export const STREETLIGHT_COUNT = 220;
+export const WINDOW_PANE_COUNT = 2048;
+const LAMP_LIGHT_POOL = 16;
+
+type QualityTier = "low" | "medium" | "high" | "ultra";
+
+interface LampRecord {
+  x: number;
+  y: number;
+  z: number;
+  heading: number;
+}
+
+const makeLightPoolTexture = (): THREE.CanvasTexture => {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, "rgba(255, 228, 160, 0.95)");
+  g.addColorStop(0.35, "rgba(255, 200, 110, 0.55)");
+  g.addColorStop(0.7, "rgba(255, 170, 70, 0.12)");
+  g.addColorStop(1, "rgba(255, 150, 50, 0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+};
 
 export interface CitySystem {
   group: THREE.Group;
   buildingMesh: THREE.InstancedMesh;
   windowMesh: THREE.InstancedMesh;
   streetlights: THREE.InstancedMesh;
-  update: (
-    px: number,
-    pz: number,
-    samplePath: (s: number) => { x: number; z: number; h: number },
-    carS: number,
-    nightFactor: number,
-  ) => void;
+  update: (px: number, pz: number, nightFactor: number) => void;
+  setQuality: (q: QualityTier) => void;
   upgradeLamppost: (model: PreparedModel) => void;
   dispose: () => void;
 }
@@ -32,32 +63,44 @@ export const createCity = (
 
   const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
   const buildingMat = new THREE.MeshStandardMaterial({
-    color: 0x9aa3ad,
-    roughness: 0.78,
-    metalness: 0.18,
+    color: 0x8a929c,
+    roughness: 0.82,
+    metalness: 0.22,
   });
+  const podiumMat = new THREE.MeshStandardMaterial({
+    color: 0x6a7078,
+    roughness: 0.88,
+    metalness: 0.12,
+  });
+  const roofMat = new THREE.MeshStandardMaterial({
+    color: 0x4a5058,
+    roughness: 0.75,
+    metalness: 0.28,
+  });
+
   const buildingMesh = new THREE.InstancedMesh(buildingGeo, buildingMat, BUILDING_COUNT);
   buildingMesh.castShadow = true;
   buildingMesh.receiveShadow = true;
   buildingMesh.frustumCulled = false;
-  group.add(buildingMesh);
+  const podiumMesh = new THREE.InstancedMesh(buildingGeo, podiumMat, BUILDING_COUNT);
+  podiumMesh.castShadow = true;
+  podiumMesh.receiveShadow = true;
+  podiumMesh.frustumCulled = false;
+  const roofMesh = new THREE.InstancedMesh(buildingGeo, roofMat, BUILDING_COUNT);
+  roofMesh.castShadow = true;
+  roofMesh.frustumCulled = false;
+  group.add(podiumMesh, buildingMesh, roofMesh);
 
   const windowGeo = new THREE.BoxGeometry(1, 1, 1);
-  const windowMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1c22,
-    emissive: new THREE.Color(0xffd47a),
-    emissiveIntensity: 0.0,
-    roughness: 0.3,
-    metalness: 0.4,
-  });
-  const windowMesh = new THREE.InstancedMesh(windowGeo, windowMat, BUILDING_COUNT);
+  const windowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true });
+  const windowMesh = new THREE.InstancedMesh(windowGeo, windowMat, WINDOW_PANE_COUNT);
   windowMesh.frustumCulled = false;
   group.add(windowMesh);
 
   const lampMat = new THREE.MeshStandardMaterial({
     color: 0xe8e4dc,
-    roughness: 0.45,
-    metalness: 0.55,
+    roughness: 0.5,
+    metalness: 0.42,
     emissive: new THREE.Color(0xffd070),
     emissiveIntensity: 0.0,
   });
@@ -66,117 +109,294 @@ export const createCity = (
   streetlights.frustumCulled = false;
   group.add(streetlights);
 
+  const poolTex = makeLightPoolTexture();
+  const poolMat = new THREE.MeshBasicMaterial({
+    map: poolTex,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const poolGeo = new THREE.PlaneGeometry(1, 1);
+  poolGeo.rotateX(-Math.PI / 2);
+  const lightPools = new THREE.InstancedMesh(poolGeo, poolMat, LAMP_LIGHT_POOL);
+  lightPools.frustumCulled = false;
+  group.add(lightPools);
+
+  const lampLights: THREE.SpotLight[] = [];
+  const lampTargets: THREE.Object3D[] = [];
+  for (let i = 0; i < LAMP_LIGHT_POOL; i++) {
+    const sl = new THREE.SpotLight(0xffe8b8, 0, 38, Math.PI * 0.48, 0.62, 1.4);
+    sl.castShadow = false;
+    sl.decay = 2;
+    const tgt = new THREE.Object3D();
+    scene.add(sl);
+    scene.add(tgt);
+    sl.target = tgt;
+    lampLights.push(sl);
+    lampTargets.push(tgt);
+  }
+
   const dummy = new THREE.Object3D();
   const hidden = new THREE.Object3D();
   hidden.scale.set(0, 0, 0);
   hidden.updateMatrix();
 
+  const lampRecords: LampRecord[] = [];
+  let activeLampCount = 0;
   let lastUpdate = { x: 99999, z: 99999 };
+  let nightFactorStored = 0;
+  let qualityTier: QualityTier = "high";
+  let lightPoolSize = LAMP_LIGHT_POOL;
 
-  const update: CitySystem["update"] = (px, pz, samplePath, carS, nightFactor) => {
-    windowMat.emissiveIntensity = 0.05 + nightFactor * 2.4;
-    lampMat.emissiveIntensity = 0.08 + nightFactor * 2.6;
+  const setQuality = (q: QualityTier) => {
+    qualityTier = q;
+    lightPoolSize = q === "low" ? 6 : q === "medium" ? 10 : LAMP_LIGHT_POOL;
+  };
 
-    if (Math.hypot(px - lastUpdate.x, pz - lastUpdate.z) < 25) return;
-    lastUpdate = { x: px, z: pz };
-
-    let li = 0;
-    const startS = Math.max(0, carS - 60);
-    for (let s = startS; s < carS + 380 && li < STREETLIGHT_COUNT; s += 22) {
-      const p = samplePath(s);
-      const nx = Math.cos(p.h);
-      const nz = -Math.sin(p.h);
-      const offset = 7.2;
-
-      for (const side of [1, -1]) {
-        if (li >= STREETLIGHT_COUNT) break;
-        const wx = p.x + nx * offset * side;
-        const wz = p.z + nz * offset * side;
-        const gy = Math.max(0, terrainHeight(wx, wz));
-        dummy.position.set(wx, gy, wz);
-        dummy.rotation.set(0, p.h + (side > 0 ? Math.PI / 2 : -Math.PI / 2), 0);
-        dummy.scale.set(1, 1, 1);
+  const syncLampLights = (px: number, pz: number) => {
+    if (nightFactorStored < 0.04) {
+      for (let i = 0; i < lampLights.length; i++) {
+        lampLights[i].intensity = 0;
+        dummy.position.set(px, -500, pz);
+        dummy.scale.set(0, 0, 0);
         dummy.updateMatrix();
-        streetlights.setMatrixAt(li++, dummy.matrix);
+        lightPools.setMatrixAt(i, dummy.matrix);
+      }
+      lightPools.instanceMatrix.needsUpdate = true;
+      return;
+    }
+
+    const sorted = lampRecords
+      .slice(0, activeLampCount)
+      .map((l, idx) => ({ ...l, idx, dist: (l.x - px) ** 2 + (l.z - pz) ** 2 }))
+      .sort((a, b) => a.dist - b.dist);
+
+    const poolCount = Math.min(lightPoolSize, sorted.length);
+    const intensity = nightFactorStored * (qualityTier === "ultra" ? 6 : qualityTier === "high" ? 5 : 4);
+
+    for (let i = 0; i < lampLights.length; i++) {
+      if (i >= poolCount) {
+        lampLights[i].intensity = 0;
+        dummy.position.set(px, -500, pz);
+        dummy.scale.set(0, 0, 0);
+        dummy.updateMatrix();
+        lightPools.setMatrixAt(i, dummy.matrix);
+        continue;
+      }
+
+      const lamp = sorted[i];
+      const lx = lamp.x;
+      const ly = lamp.y + 4.85;
+      const lz = lamp.z;
+      const fwdX = Math.sin(lamp.heading);
+      const fwdZ = Math.cos(lamp.heading);
+      const bulbX = lx + fwdX * 0.55;
+      const bulbZ = lz + fwdZ * 0.55;
+
+      lampLights[i].position.set(bulbX, ly, bulbZ);
+      lampTargets[i].position.set(bulbX + fwdX * 2, lamp.y + 0.15, bulbZ + fwdZ * 2);
+      lampLights[i].intensity = intensity;
+
+      const poolScale = 9 + nightFactorStored * 4;
+      dummy.position.set(bulbX + fwdX * 1.2, lamp.y + 0.04, bulbZ + fwdZ * 1.2);
+      dummy.rotation.set(0, lamp.heading, 0);
+      dummy.scale.set(poolScale, poolScale, 1);
+      dummy.updateMatrix();
+      lightPools.setMatrixAt(i, dummy.matrix);
+    }
+
+    for (let i = poolCount; i < lampLights.length; i++) {
+      lampLights[i].intensity = 0;
+      dummy.position.set(px, -500, pz);
+      dummy.scale.set(0, 0, 0);
+      dummy.updateMatrix();
+      lightPools.setMatrixAt(i, dummy.matrix);
+    }
+    lightPools.count = poolCount;
+    lightPools.instanceMatrix.needsUpdate = true;
+    poolMat.opacity = 0.25 + nightFactorStored * 0.2;
+  };
+
+  const placeWindowGrid = (
+    wx: number,
+    wz: number,
+    gy: number,
+    h: number,
+    w: number,
+    nx: number,
+    nz: number,
+    side: number,
+    d: number,
+    nightFactor: number,
+    wi: { value: number },
+  ): void => {
+    const rows = Math.max(2, Math.min(14, Math.floor(h / 3.2)));
+    const cols = Math.max(2, Math.min(7, Math.floor(w / 2.1)));
+    const paneW = (w * 0.72) / cols;
+    const paneH = (h * 0.82) / rows;
+    const facadeX = wx - nx * (d * 0.5 + 0.08) * side;
+    const facadeZ = wz - nz * (d * 0.5 + 0.08) * side;
+    const rightX = -nz * side;
+    const rightZ = nx * side;
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        if (wi.value >= WINDOW_PANE_COUNT) return;
+        const litRand = hash(wx * 0.17 + wz * 0.23 + row * 7.1 + col * 11.3);
+        const floorBias = 0.12 + (row / rows) * 0.35;
+        const lit = litRand < 0.58 + floorBias * 0.28;
+        const warmth = hash(wx + col * 3.7 + row * 5.1);
+        const hue = warmth > 0.72 ? 0.58 : warmth > 0.4 ? 0.1 : 0.07;
+        const u = (col + 0.5) / cols - 0.5;
+        const v = (row + 0.5) / rows;
+        const px = facadeX + rightX * u * w * 0.78;
+        const pz = facadeZ + rightZ * u * w * 0.78;
+        const py = gy + v * h * 0.88 + paneH * 0.1;
+
+        dummy.position.set(px, py, pz);
+        dummy.rotation.set(0, Math.atan2(-nx * side, -nz * side), 0);
+        dummy.scale.set(paneW * 0.88, paneH * 0.9, 0.12);
+        dummy.updateMatrix();
+        windowMesh.setMatrixAt(wi.value, dummy.matrix);
+
+        if (lit && nightFactor > 0.12) {
+          const bright = 0.35 + hash(row * 13 + col * 19) * 0.45;
+          const tint = new THREE.Color().setHSL(hue, 0.4 + warmth * 0.2, bright * nightFactor);
+          windowMesh.setColorAt(wi.value, tint);
+        } else {
+          const glass = new THREE.Color().setHSL(0.62, 0.25, 0.06 + nightFactor * 0.04);
+          windowMesh.setColorAt(wi.value, glass);
+        }
+        wi.value++;
       }
     }
+  };
 
-    for (let i = li; i < STREETLIGHT_COUNT; i++) {
-      streetlights.setMatrixAt(i, hidden.matrix);
-    }
-    streetlights.count = li;
-    streetlights.instanceMatrix.needsUpdate = true;
-    streetlights.computeBoundingSphere();
+  const update: CitySystem["update"] = (px, pz, nightFactor) => {
+    nightFactorStored = nightFactor;
+    windowMat.opacity = 0.8 + nightFactor * 0.08;
+    lampMat.emissiveIntensity = 0.02 + nightFactor * 0.8;
 
-    let bi = 0;
-    const map = getActiveMap();
-    const zoneSpacing = map.cityZoneSpacing;
-    const zoneLen = 200;
-    const startZone = Math.floor((carS - 120) / zoneSpacing);
-    const endZone = Math.floor((carS + 600) / zoneSpacing);
+    const needsRebuild = Math.hypot(px - lastUpdate.x, pz - lastUpdate.z) >= 30;
+    if (needsRebuild) {
+      lastUpdate = { x: px, z: pz };
+      lampRecords.length = 0;
 
-    for (let z = startZone; z <= endZone && bi < BUILDING_COUNT; z++) {
-      if (z < 0) continue;
-      const zoneCenterS = z * zoneSpacing + zoneSpacing * 0.5;
-      const cityRand = hash(z * 31.7);
-      if (cityRand < map.citySkipChance) continue;
-      const isMetro = cityRand > 0.65;
+      let li = 0;
+      const gx0 = gridCoord(px) - 2;
+      const gx1 = gridCoord(px) + 2;
+      const gz0 = gridCoord(pz) - 2;
+      const gz1 = gridCoord(pz) + 2;
 
-      const buildingsPerSide = isMetro ? 11 : 6;
-      for (let side = -1; side <= 1; side += 2) {
-        for (let n = 0; n < buildingsPerSide && bi < BUILDING_COUNT; n++) {
-          const sOff = (n / buildingsPerSide - 0.5) * zoneLen + (hash(z * 7 + n * 3 + side) - 0.5) * 14;
-          const s = zoneCenterS + sOff;
-          const p = samplePath(s);
-          const nx = Math.cos(p.h);
-          const nz = -Math.sin(p.h);
-          const lateral = 13 + hash(z * 11 + n * 5 + side) * 9;
-          const wx = p.x + nx * lateral * side;
-          const wz = p.z + nz * lateral * side;
-          const gy = Math.max(0, terrainHeight(wx, wz));
-
-          const h = isMetro
-            ? 16 + hash(wx * 0.01 + wz * 0.011) * 60
-            : 6 + hash(wx * 0.02 + wz * 0.03) * 14;
-          const w = 6 + hash(wx * 0.03 + wz * 0.02) * 7;
-          const d = 6 + hash(wx * 0.04 + wz * 0.05) * 7;
-
-          dummy.position.set(wx, gy + h * 0.5, wz);
-          dummy.rotation.set(0, p.h + (side > 0 ? Math.PI / 2 : -Math.PI / 2), 0);
-          dummy.scale.set(w, h, d);
-          dummy.updateMatrix();
-          buildingMesh.setMatrixAt(bi, dummy.matrix);
-          const tint = new THREE.Color().setHSL(
-            0.06 + hash(wx * 0.7 + wz) * 0.12,
-            0.06 + hash(wx + wz * 1.3) * 0.18,
-            0.32 + hash(wx * 1.1 + wz * 0.9) * 0.4,
-          );
-          buildingMesh.setColorAt(bi, tint);
-
-          dummy.position.set(
-            wx - nx * (d * 0.5 + 0.05) * side,
-            gy + h * 0.5,
-            wz - nz * (d * 0.5 + 0.05) * side,
-          );
-          dummy.scale.set(w * 0.78, h * 0.84, 0.1);
-          dummy.updateMatrix();
-          windowMesh.setMatrixAt(bi, dummy.matrix);
-          bi++;
+      for (let gx = gx0; gx <= gx1; gx++) {
+        for (let gz = gz0; gz <= gz1; gz++) {
+          const cx = gridLineX(gx);
+          const cz = gridLineZ(gz);
+          for (const [lx, lz, heading] of [
+            [cx + SIDEWALK_OFF, cz, 0],
+            [cx - SIDEWALK_OFF, cz, Math.PI],
+            [cx, cz + SIDEWALK_OFF, Math.PI / 2],
+            [cx, cz - SIDEWALK_OFF, -Math.PI / 2],
+          ] as [number, number, number][]) {
+            if (li >= STREETLIGHT_COUNT) break;
+            const gy = Math.max(0, terrainHeight(lx, lz));
+            dummy.position.set(lx, gy, lz);
+            dummy.rotation.set(0, heading, 0);
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            streetlights.setMatrixAt(li, dummy.matrix);
+            lampRecords.push({ x: lx, y: gy, z: lz, heading });
+            li++;
+          }
         }
       }
+      activeLampCount = li;
+      for (let i = li; i < STREETLIGHT_COUNT; i++) streetlights.setMatrixAt(i, hidden.matrix);
+      streetlights.count = li;
+      streetlights.instanceMatrix.needsUpdate = true;
+
+      let bi = 0;
+      let wi = 0;
+      const map = getActiveMap();
+      const inset = BLOCK * 0.5 - 16;
+
+      for (let gx = gx0; gx <= gx1 && bi < BUILDING_COUNT; gx++) {
+        for (let gz = gz0; gz <= gz1 && bi < BUILDING_COUNT; gz++) {
+          if (hash(gx * 31.7 + gz * 17.3) < map.citySkipChance * 0.5) continue;
+
+          for (const sx of [-1, 1]) {
+            for (const sz of [-1, 1]) {
+              if (bi >= BUILDING_COUNT) break;
+              const wx = gridLineX(gx) + sx * inset + sx * (hash(gx + gz) - 0.5) * 6;
+              const wz = gridLineZ(gz) + sz * inset + sz * (hash(gz + gx) - 0.5) * 6;
+              const gy = Math.max(0, terrainHeight(wx, wz));
+              const bType = Math.floor(hash(wx * 0.1 + wz * 0.1) * 3);
+              const towerH = bType === 2
+                ? 8 + hash(wx * 0.02) * 12
+                : 18 + hash(wx * 0.01 + wz * 0.011) * 55;
+              const towerW = 5 + hash(wx * 0.03) * 5;
+              const towerD = 5 + hash(wz * 0.04) * 5;
+              const rot = hash(wx + wz) * Math.PI * 0.5;
+              const facadeSide = sx > 0 ? 1 : -1;
+
+              const podiumH = 3 + hash(wx) * 2;
+              dummy.position.set(wx, gy + podiumH * 0.5, wz);
+              dummy.rotation.set(0, rot, 0);
+              dummy.scale.set(towerW * 1.15, podiumH, towerD * 1.15);
+              dummy.updateMatrix();
+              podiumMesh.setMatrixAt(bi, dummy.matrix);
+
+              dummy.position.set(wx, gy + podiumH + towerH * 0.5, wz);
+              dummy.scale.set(towerW * (bType === 1 ? 0.82 : 0.92), towerH, towerD * (bType === 1 ? 0.82 : 0.92));
+              dummy.updateMatrix();
+              buildingMesh.setMatrixAt(bi, dummy.matrix);
+              const tint = new THREE.Color().setHSL(
+                0.06 + hash(wx * 0.7 + wz) * 0.14,
+                0.08 + hash(wx + wz) * 0.2,
+                0.26 + hash(wx * 1.1) * 0.42,
+              );
+              buildingMesh.setColorAt(bi, tint);
+              podiumMesh.setColorAt(bi, tint.clone().multiplyScalar(0.85));
+
+              const roofH = 1.2 + hash(wz) * 1.5;
+              dummy.position.set(wx, gy + podiumH + towerH + roofH * 0.5, wz);
+              dummy.scale.set(towerW * 0.75, roofH, towerD * 0.75);
+              dummy.updateMatrix();
+              roofMesh.setMatrixAt(bi, dummy.matrix);
+
+              const nx = Math.cos(rot);
+              const nz = -Math.sin(rot);
+              const winIdx = { value: wi };
+              placeWindowGrid(wx, wz, gy + podiumH, towerH, towerW, nx, nz, facadeSide, towerD, nightFactor, winIdx);
+              wi = winIdx.value;
+              bi++;
+            }
+          }
+        }
+      }
+
+      for (let i = bi; i < BUILDING_COUNT; i++) {
+        buildingMesh.setMatrixAt(i, hidden.matrix);
+        podiumMesh.setMatrixAt(i, hidden.matrix);
+        roofMesh.setMatrixAt(i, hidden.matrix);
+      }
+      for (let i = wi; i < WINDOW_PANE_COUNT; i++) windowMesh.setMatrixAt(i, hidden.matrix);
+
+      buildingMesh.count = bi;
+      podiumMesh.count = bi;
+      roofMesh.count = bi;
+      windowMesh.count = wi;
+      buildingMesh.instanceMatrix.needsUpdate = true;
+      podiumMesh.instanceMatrix.needsUpdate = true;
+      roofMesh.instanceMatrix.needsUpdate = true;
+      windowMesh.instanceMatrix.needsUpdate = true;
+      if (buildingMesh.instanceColor) buildingMesh.instanceColor.needsUpdate = true;
+      if (podiumMesh.instanceColor) podiumMesh.instanceColor.needsUpdate = true;
+      if (windowMesh.instanceColor) windowMesh.instanceColor.needsUpdate = true;
     }
 
-    for (let i = bi; i < BUILDING_COUNT; i++) {
-      buildingMesh.setMatrixAt(i, hidden.matrix);
-      windowMesh.setMatrixAt(i, hidden.matrix);
-    }
-    buildingMesh.count = bi;
-    windowMesh.count = bi;
-    buildingMesh.instanceMatrix.needsUpdate = true;
-    if (buildingMesh.instanceColor) buildingMesh.instanceColor.needsUpdate = true;
-    windowMesh.instanceMatrix.needsUpdate = true;
-    buildingMesh.computeBoundingSphere();
-    windowMesh.computeBoundingSphere();
+    syncLampLights(px, pz);
   };
 
   const upgradeLamppost = (model: PreparedModel) => {
@@ -185,15 +405,37 @@ export const createCity = (
   };
 
   const dispose = () => {
+    for (const sl of lampLights) {
+      scene.remove(sl);
+      scene.remove(sl.target);
+      sl.dispose();
+    }
+    poolTex.dispose();
+    poolMat.dispose();
+    poolGeo.dispose();
     buildingGeo.dispose();
     buildingMat.dispose();
+    podiumMat.dispose();
+    roofMat.dispose();
+    podiumMesh.dispose();
+    roofMesh.dispose();
     windowGeo.dispose();
     windowMat.dispose();
     lampMat.dispose();
     streetlights.geometry.dispose();
     streetlights.dispose();
+    lightPools.dispose();
     scene.remove(group);
   };
 
-  return { group, buildingMesh, windowMesh, streetlights, update, upgradeLamppost, dispose };
+  return {
+    group,
+    buildingMesh,
+    windowMesh,
+    streetlights,
+    update,
+    setQuality,
+    upgradeLamppost,
+    dispose,
+  };
 };

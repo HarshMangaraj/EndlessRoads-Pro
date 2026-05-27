@@ -14,6 +14,8 @@ interface HUDProps {
   onWeatherChange: (w: string) => void;
   onTimeChange: (v: number) => void;
   onAutoTimeChange: (v: boolean) => void;
+  audioMuted?: boolean;
+  onToggleMute?: () => void;
 }
 
 const WEATHER_OPTIONS = [
@@ -44,6 +46,7 @@ const labelStyle: React.CSSProperties = {
 export default function HUD({
   speed, rpm, gear, weather, timeDisplay, isNight, timeOfDay, autoTime,
   showBiome, currentBiome, onWeatherChange, onTimeChange, onAutoTimeChange,
+  audioMuted = false, onToggleMute,
 }: HUDProps) {
   return (
     <>
@@ -92,6 +95,18 @@ export default function HUD({
             style={{ accentColor: "#fff" }} />
           Auto day/night cycle
         </label>
+        {onToggleMute && (
+          <button onClick={onToggleMute} style={{
+            marginTop: 10, width: "100%",
+            background: audioMuted ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.12)",
+            border: "1px solid rgba(255,255,255,.12)",
+            color: audioMuted ? "rgba(255,255,255,.45)" : "rgba(255,255,255,.85)",
+            fontSize: 11, borderRadius: 10, padding: "6px 10px", cursor: "pointer",
+            fontFamily: "inherit", letterSpacing: "0.06em",
+          }}>
+            {audioMuted ? "Sound off" : "Sound on"}
+          </button>
+        )}
       </div>
 
       {/* Bottom-right: Speedometer */}
