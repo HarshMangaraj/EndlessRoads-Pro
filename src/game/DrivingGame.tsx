@@ -15,8 +15,9 @@ import {
   terrainHeight, biomeWeightsAt, dominantBiome,
   createPathState, getGroundColorAt, hash,
 } from "./terrain";
-import { carAnchorY, isOnRoad, isOnSidewalk, ROAD_HALF } from "./roadNetwork";
+import { carAnchorY, isOnRoad, isOnSidewalk, ROAD_HALF, SIDEWALK_OFF } from "./roadNetwork";
 import { resolveObstacleCollisions } from "./collisions";
+import { createWorldProps } from "./worldProps";
 import { createCity } from "./city";
 import { createPostFx } from "./postfx";
 import { createGameAudio } from "./audio";
@@ -54,7 +55,7 @@ export default function DrivingGame() {
   const [loadStatus,   setLoadStatus]   = useState("");
   const [cameraMode,   setCameraMode]   = useState<"chase" | "hood" | "cinematic">("chase");
   const [carColor,     setCarColor]     = useState<CarColorId>("crimson");
-  const [mapId,        setMapId]        = useState<MapId>("forest");
+  const [mapId,        setMapId]        = useState<MapId>("metro");
   const [worldLoading, setWorldLoading] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
@@ -73,7 +74,8 @@ export default function DrivingGame() {
   const resetRef        = useRef(false);
   const bodyColorRef    = useRef(0xb3261e);
   const qualityRef      = useRef<QualityTier>("high");
-  const mapIdRef        = useRef<MapId>("forest");
+  const mapIdRef        = useRef<MapId>("metro");
+  const worldApiRef     = useRef<{ applyQuality?: (q: QualityTier) => void }>({});
 
   useEffect(() => { weatherRef.current = weather; }, [weather]);
   useEffect(() => { timeRef.current    = timeOfDay; }, [timeOfDay]);
@@ -85,6 +87,7 @@ export default function DrivingGame() {
     if (found) bodyColorRef.current = found.hex;
   }, [carColor]);
   useEffect(() => { qualityRef.current = quality; }, [quality]);
+  useEffect(() => { worldApiRef.current.applyQuality?.(quality); }, [quality]);
   useEffect(() => { mapIdRef.current = mapId; }, [mapId]);
 
   const handleMapChange = useCallback((id: MapId) => {
@@ -213,18 +216,22 @@ export default function DrivingGame() {
       for (let i = 0; i < pos.count; i++) {
         const wx = pos.getX(i) + tx * TILE_SIZE;
         const wz = pos.getZ(i) + tz * TILE_SIZE;
-        const hy = Math.max(0, terrainHeight(wx, wz));
-        pos.setY(i, hy);
+        let hy = Math.max(0, terrainHeight(wx, wz));
         let r: number, g: number, b: number;
-        if (isOnRoad(wx, wz, ROAD_HALF + 1)) {
-          r = 0.14; g = 0.14; b = 0.15;
-        } else if (isOnSidewalk(wx, wz)) {
-          r = 0.22; g = 0.21; b = 0.20;
+        const onPavement = isOnRoad(wx, wz, SIDEWALK_OFF + 0.5);
+        const onWalk = !onPavement && isOnSidewalk(wx, wz);
+        if (onPavement) {
+          r = 0.1; g = 0.1; b = 0.11;
+          hy = Math.max(0, hy - 0.22);
+        } else if (onWalk) {
+          r = 0.13; g = 0.13; b = 0.14;
+          hy = Math.max(0, hy - 0.1);
         } else {
           const bw = biomeWeightsAt(wx, wz);
           const gc = getGroundColorAt(wx, wz, hy, bw);
           r = gc.r; g = gc.g; b = gc.b;
         }
+        pos.setY(i, hy);
         colors[i * 3]     = r;
         colors[i * 3 + 1] = g;
         colors[i * 3 + 2] = b;
@@ -232,14 +239,16 @@ export default function DrivingGame() {
       geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       geo.computeVertexNormals();
 
-      // Second pass: slope-based rock tint + altitude snow using computed normals
+      // Slope/snow tint — skip road & sidewalk so asphalt stays dark (not gray rock)
       const norms = geo.attributes.normal as THREE.BufferAttribute;
       for (let i = 0; i < pos.count; i++) {
-        const ny  = norms.getY(i);          // 1 = flat, 0 = vertical cliff
-        const hy  = pos.getY(i);
-        // Steep slope → grey rock
+        const wx = pos.getX(i) + tx * TILE_SIZE;
+        const wz = pos.getZ(i) + tz * TILE_SIZE;
+        if (isOnRoad(wx, wz, SIDEWALK_OFF + 0.5) || isOnSidewalk(wx, wz)) continue;
+
+        const ny = norms.getY(i);
+        const hy = pos.getY(i);
         const rock = Math.min(1, Math.max(0, (1 - ny) * 3.0 - 0.35));
-        // High & flat → snow
         const snowLine = getActiveMap().snowLine;
         const snow = Math.min(1, Math.max(0, (hy - snowLine) / 20) * ny * 2.4);
 
@@ -653,6 +662,7 @@ export default function DrivingGame() {
       city?.setQuality(q);
     };
     applyQualitySettings(qualityRef.current);
+    worldApiRef.current.applyQuality = applyQualitySettings;
 
     scene.add(ambLight); scene.add(hemiLight);
     scene.add(dirLight); scene.add(dirLight.target);
@@ -801,12 +811,22 @@ export default function DrivingGame() {
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.92 });
     const rimGeo   = new THREE.CylinderGeometry(0.26, 0.26, 0.38, 14);
     const rimMat   = new THREE.MeshStandardMaterial({ color: 0xc8c8c8, metalness: 0.92, roughness: 0.12 });
-    const wheels: THREE.Mesh[] = [], rims: THREE.Mesh[] = [];
-    ([[1.04, 0.38, 1.52], [-1.04, 0.38, 1.52], [1.04, 0.38, -1.47], [-1.04, 0.38, -1.47]] as [number,number,number][]).forEach(([x, y, z]) => {
-      const w   = new THREE.Mesh(wheelGeo, wheelMat); w.position.set(x, y, z); w.rotation.z = Math.PI / 2; w.castShadow = true;
-      const rim = new THREE.Mesh(rimGeo,   rimMat);   rim.position.set(x, y, z); rim.rotation.z = Math.PI / 2; rim.castShadow = true;
-      wheels.push(w); rims.push(rim);
-      carGroup.add(w); carGroup.add(rim);
+    const wheelPivots: THREE.Object3D[] = [];
+    ([[1.04, 0.38, 1.52, true], [-1.04, 0.38, 1.52, true], [1.04, 0.38, -1.47, false], [-1.04, 0.38, -1.47, false]] as [number, number, number, boolean][]).forEach(([x, y, z, steer]) => {
+      const pivot = new THREE.Object3D();
+      pivot.position.set(x, y, z);
+      const roll = new THREE.Object3D();
+      const w = new THREE.Mesh(wheelGeo, wheelMat);
+      w.rotation.z = Math.PI / 2;
+      w.castShadow = true;
+      const rim = new THREE.Mesh(rimGeo, rimMat);
+      rim.rotation.z = Math.PI / 2;
+      rim.castShadow = true;
+      roll.add(w, rim);
+      pivot.add(roll);
+      carGroup.add(pivot);
+      (pivot as THREE.Object3D & { userData: { steer: boolean } }).userData.steer = steer;
+      wheelPivots.push(pivot);
     });
     const exMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.82, roughness: 0.28 });
     const exL   = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.3, 9), exMat); exL.position.set(0.5, 0.32, -2.3); exL.rotation.x = Math.PI / 2;
@@ -840,10 +860,14 @@ export default function DrivingGame() {
     const roadRenderer = createRoadRenderer(scene);
     const intersections = createIntersections(scene);
     const pedestrians = createPedestrians(scene);
+    const worldProps = createWorldProps(scene);
 
     let flashAmt = 0, nextFlash = 3 + Math.random() * 6;
     let wheelRot = 0;
     let timeHudAccum = 0;
+    let hudTickAccum = 0;
+    const sceneBgColor = new THREE.Color();
+    let lastCollisionAt = -10;
 
     try {
       const starter = createStarterAssets();
@@ -904,7 +928,8 @@ export default function DrivingGame() {
       if (resetRef.current) {
         resetRef.current = false;
         vs.s = 0; vs.speed = 0; vs.wheelAngle = 0; vs.slipAngle = 0;
-      vs.heading = 0; vs.worldPos.set(0, 0.5, 0);
+      vs.heading = 0;
+      vs.worldPos.set(0, carAnchorY(0, 0), 0);
       }
 
       const wx = weatherRef.current;
@@ -928,14 +953,17 @@ export default function DrivingGame() {
       // Torque curve: more grunt in mid-range, falls off at top speed
       const spd         = Math.abs(vs.speed) * 3.6;
       const torqueFactor = Math.max(0.35, 1 - spd / (MAX_SPEED * 3.6 * 1.3));
-      const accelForce   = gasOn ? 9 * torqueFactor : 0;
+      const onPavement = isOnRoad(vs.worldPos.x, vs.worldPos.z, ROAD_HALF + 0.8);
+      const surfaceGrip = onPavement ? 1 : 0.42;
+
+      const accelForce   = gasOn ? 9 * torqueFactor * surfaceGrip : 0;
       const brakeForce   = brakeOn ? 11 : 0;
       const handbrake    = spaceOn ? 5.5 : 0;
       const sign         = vs.speed >= 0 ? 1 : -1;
 
       vs.speed += (accelForce - brakeForce * sign) * dt;
       vs.speed -= handbrake * sign * dt;
-      vs.speed *= 1 - dt * (0.22 + (spaceOn ? 0.14 : 0));
+      vs.speed *= 1 - dt * (0.22 + (spaceOn ? 0.14 : 0) + (onPavement ? 0 : 0.35));
       vs.speed  = Math.max(-MAX_SPEED * 0.32, Math.min(MAX_SPEED, vs.speed));
 
       // Gear
@@ -965,13 +993,12 @@ export default function DrivingGame() {
       vs.slipAngle  = Math.max(-0.6, Math.min(0.6, vs.slipAngle));
 
       // Traction ellipse: lateral grip degrades near slip limit
-      const tractionMult = Math.max(0.05, 1 - Math.abs(vs.slipAngle) * 1.4);
+      const tractionMult = Math.max(0.05, (1 - Math.abs(vs.slipAngle) * 1.4) * surfaceGrip);
       const turnRate = rawTurnRate * tractionMult;
       vs.heading += (turnRate + vs.slipAngle * 0.22) * dt;
 
       vs.worldPos.x += Math.sin(vs.heading) * vs.speed * dt;
       vs.worldPos.z += Math.cos(vs.heading) * vs.speed * dt;
-
       vs.worldPos.y = carAnchorY(vs.worldPos.x, vs.worldPos.z);
       setAnchor(vs.worldPos.x, vs.worldPos.z, vs.heading);
 
@@ -982,19 +1009,23 @@ export default function DrivingGame() {
       suspPitch    += suspPitchVel * dt;
 
       // Vertical suspension
-      const targetSusp = Math.abs(vs.speed) > 0.5 ? (Math.random() - 0.5) * 0.055 : 0;
+      const targetSusp = Math.abs(vs.speed) > 0.5
+        ? Math.sin(now * 0.018 + vs.s * 0.4) * 0.028 * Math.min(1, spd / 35)
+        : 0;
       suspVel += (targetSusp - suspBounce) * 14 * dt;
       suspVel *= 0.78;
       suspBounce += suspVel;
 
-      carGroup.position.copy(vs.worldPos); carGroup.position.y += suspBounce;
       carGroup.rotation.y = vs.heading + vs.slipAngle;
       carGroup.rotation.x = suspPitch;
 
       wheelRot += vs.speed * dt * 0.72;
-      wheels.forEach((w, i) => {
-        w.rotation.x   = wheelRot; rims[i].rotation.x = wheelRot;
-        if (i < 2) { w.rotation.y = -vs.wheelAngle * 2.2; rims[i].rotation.y = -vs.wheelAngle * 2.2; }
+      wheelPivots.forEach((pivot) => {
+        const roll = pivot.children[0] as THREE.Object3D;
+        roll.rotation.x = wheelRot;
+        if ((pivot as THREE.Object3D & { userData: { steer: boolean } }).userData.steer) {
+          pivot.rotation.y = -vs.wheelAngle;
+        }
       });
 
       // ── Camera ───────────────────────────────────────────────────────────
@@ -1004,7 +1035,7 @@ export default function DrivingGame() {
       let camDist   = 9.5 + Math.abs(vs.speed) * 0.15;
       let camFOV    = 62 + Math.min(12, spd * 0.1);
       if (camMode === "hood") {
-        camHeight = 1.38; camDist = -2.0; camFOV = 78;
+        camHeight = 1.55; camDist = -2.0; camFOV = 78;
       } else if (camMode === "cinematic") {
         camHeight = 5.5 + Math.abs(vs.speed) * 0.08; camDist = 16; camFOV = 50;
       }
@@ -1069,7 +1100,8 @@ export default function DrivingGame() {
       seaMesh.visible = map.seaVisible;
 
       renderer.toneMappingExposure += (map.exposure - renderer.toneMappingExposure) * dt * 0.5;
-      scene.background = new THREE.Color(map.fogColor);
+      sceneBgColor.setHex(map.fogColor);
+      scene.background = sceneBgColor;
 
       const warm = map.sunWarmth;
       const sunColor = new THREE.Color(0xff6600).lerp(
@@ -1151,18 +1183,29 @@ export default function DrivingGame() {
 
       city?.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
       traffic.update(vs.worldPos.x, vs.worldPos.z, gameTimeSec, dt);
+      worldProps.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
+      pedestrians.setPlayerSpeed(Math.abs(vs.speed));
 
       const poleHits = resolveObstacleCollisions(vs.worldPos.x, vs.worldPos.z, [
+        ...(city?.getBuildingObstacles() ?? []),
+        ...traffic.getObstacles(),
         ...intersections.getObstacles(),
         ...(city?.getObstacles() ?? []),
       ]);
       if (poleHits.hit) {
         vs.worldPos.x = poleHits.x;
         vs.worldPos.z = poleHits.z;
-        carGroup.position.x = poleHits.x;
-        carGroup.position.z = poleHits.z;
-        vs.speed *= Math.max(0.35, 1 - dt * 4);
+        const impact = poleHits.hitBuilding ? 0.25 : poleHits.hitTraffic ? 0.4 : 0.55;
+        vs.speed *= Math.max(impact, 1 - dt * 6);
+        if (gameTimeSec - lastCollisionAt > 0.35) {
+          lastCollisionAt = gameTimeSec;
+          suspVel += 0.12;
+        }
       }
+
+      vs.worldPos.y = carAnchorY(vs.worldPos.x, vs.worldPos.z);
+      carGroup.position.copy(vs.worldPos);
+      carGroup.position.y += suspBounce;
 
       const rpmNow = Math.min(100, (Math.abs(vs.speed) / MAX_SPEED) * 100);
       gameAudio.update({
@@ -1190,11 +1233,14 @@ export default function DrivingGame() {
         if (biomeTimerRef.current <= 0) setShowBiome(false);
       }
 
-      // HUD
-      const rpmVal = Math.min(100, (Math.abs(vs.speed) / MAX_SPEED) * 100);
-      setSpeed(Math.round(Math.abs(vs.speed) * 3.6));
-      setRpm(rpmVal);
-      setGear(vs.speed < -0.5 ? "R" : vs.speed < 0.5 ? "N" : String(vs.gear));
+      hudTickAccum += dt;
+      if (hudTickAccum >= 0.1) {
+        hudTickAccum = 0;
+        const rpmVal = Math.min(100, (Math.abs(vs.speed) / MAX_SPEED) * 100);
+        setSpeed(Math.round(Math.abs(vs.speed) * 3.6));
+        setRpm(rpmVal);
+        setGear(vs.speed < -0.5 ? "R" : vs.speed < 0.5 ? "N" : String(vs.gear));
+      }
 
       // Minimap — draw road grid around player
       minimapRef.current?.draw(vs.worldPos.x, vs.worldPos.z, vs.heading);
@@ -1218,7 +1264,10 @@ export default function DrivingGame() {
       roadRenderer.dispose();
       intersections.dispose();
       pedestrians.dispose();
+      traffic.dispose();
+      worldProps.dispose();
       postFx.dispose();
+      worldApiRef.current.applyQuality = undefined;
       gameAudio.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);

@@ -14,7 +14,7 @@ export const roadSurfaceY = (wx: number, wz: number): number =>
 
 /** Car group origin so tire contact meets the road (local bottom = localY - radius). */
 export const carAnchorY = (wx: number, wz: number): number =>
-  roadSurfaceY(wx, wz) + (CAR_WHEEL_RADIUS - CAR_WHEEL_LOCAL_Y + 0.02);
+  roadSurfaceY(wx, wz) + (CAR_WHEEL_RADIUS - CAR_WHEEL_LOCAL_Y + 0.08);
 export const ROAD_HALF = 7.2;
 export const LANE_OFF = 3.0;
 export const SIDEWALK_OFF = 9.0;
@@ -126,12 +126,12 @@ export const distToJunctionAhead = (
  * Based on a simple hash so the same location is always the same zone.
  */
 export const densityAt = (gx: number, gz: number): number => {
-  // Core downtown: within 3 blocks of origin
   const dist = Math.max(Math.abs(gx), Math.abs(gz));
-  if (dist <= 2) return 0.95;
-  if (dist <= 4) return 0.7;
-  if (dist <= 6) return 0.45;
-  return 0.2 + hash(gx * 11.7 + gz * 19.3) * 0.15;
+  if (dist <= 1) return 1.0;
+  if (dist <= 3) return 0.92;
+  if (dist <= 5) return 0.75;
+  if (dist <= 8) return 0.55;
+  return 0.28 + hash(gx * 11.7 + gz * 19.3) * 0.2;
 };
 
 export const positionOnLane = (
@@ -139,11 +139,12 @@ export const positionOnLane = (
   line: number,
   t: number,
   lane: -1 | 1,
+  dir: 1 | -1 = 1,
 ): { x: number; z: number; heading: number } => {
   if (axis === "ns") {
     const x = gridLineX(line) + lane * LANE_OFF;
-    return { x, z: t, heading: t > 0 ? 0 : Math.PI };
+    return { x, z: t, heading: dir > 0 ? 0 : Math.PI };
   }
   const z = gridLineZ(line) + lane * LANE_OFF;
-  return { x: t, z, heading: t > 0 ? Math.PI / 2 : -Math.PI / 2 };
+  return { x: t, z, heading: dir > 0 ? Math.PI / 2 : -Math.PI / 2 };
 };

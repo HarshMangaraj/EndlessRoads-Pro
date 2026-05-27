@@ -2,7 +2,7 @@ import { fbm2, noise1 } from "./noise";
 import type { BiomeKey, BiomeWeights } from "./constants";
 import { BIOME_KEYS } from "./constants";
 
-export type MapId = "plain" | "forest" | "hills" | "beach";
+export type MapId = "metro" | "plain" | "forest" | "hills" | "beach";
 
 export interface MapProfile {
   id: MapId;
@@ -46,6 +46,13 @@ const bw = (weights: Partial<BiomeWeights>): BiomeWeights => {
   return out;
 };
 
+/** Near-flat terrain for dense urban driving (GTA-style downtown). */
+const metroTerrain = (wx: number, wz: number): number => {
+  const n = (fbm2(wx * 0.0018 + 2.1, wz * 0.0018 + 4.4, 3) * 2 - 1) * 1.2;
+  const fine = (fbm2(wx * 0.012, wz * 0.012, 2) * 2 - 1) * 0.35;
+  return Math.max(0, n + fine + 1.1);
+};
+
 const plainTerrain = (wx: number, wz: number): number => {
   const n = (fbm2(wx * 0.003 + 1.2, wz * 0.003 + 2.8, 4) * 2 - 1) * 4;
   const fine = (fbm2(wx * 0.018, wz * 0.018, 2) * 2 - 1) * 1.2;
@@ -79,6 +86,36 @@ const beachTerrain = (wx: number, wz: number): number => {
 };
 
 export const MAPS: Record<MapId, MapProfile> = {
+  metro: {
+    id: "metro",
+    label: "Los Santos Metro",
+    tagline: "Dense downtown · traffic & nightlife",
+    accent: "#f59e0b",
+    displayBiome: "Downtown",
+    terrainHeight: metroTerrain,
+    biomeWeights: () => bw({ coastal: 0.55, desert: 0.15, forest: 0.1, mountain: 0.2 }),
+    groundColor: (_wx, _wz, _hy) => ({ r: 0.2, g: 0.22, b: 0.24 }),
+    forceBiome: undefined,
+    seaLevel: -2,
+    seaVisible: false,
+    seaColor: 0x0a3048,
+    fogColor: 0x8a9aaa,
+    fogDensity: 0.0045,
+    skyZenith: 0x3a5a8a,
+    skyHorizon: 0xc8d0e0,
+    sunWarmth: 1.1,
+    exposure: 1.35,
+    bloomStrength: 0.32,
+    vegSpawnThreshold: 0.55,
+    vegDensityMul: 0.35,
+    palmBias: 0.15,
+    showPeaks: false,
+    cityZoneSpacing: 160,
+    citySkipChance: 0.02,
+    snowLine: 999,
+    roadColor: 0x1a1a1e,
+    shoulderColor: 0x2a2a2e,
+  },
   plain: {
     id: "plain",
     label: "Great Plains",
@@ -216,7 +253,7 @@ export const MAPS: Record<MapId, MapProfile> = {
   },
 };
 
-let activeMap: MapProfile = MAPS.forest;
+let activeMap: MapProfile = MAPS.metro;
 
 export const setActiveMap = (id: MapId): void => {
   activeMap = MAPS[id];
@@ -224,4 +261,4 @@ export const setActiveMap = (id: MapId): void => {
 
 export const getActiveMap = (): MapProfile => activeMap;
 
-export const MAP_LIST: MapProfile[] = [MAPS.plain, MAPS.forest, MAPS.hills, MAPS.beach];
+export const MAP_LIST: MapProfile[] = [MAPS.metro, MAPS.plain, MAPS.forest, MAPS.hills, MAPS.beach];

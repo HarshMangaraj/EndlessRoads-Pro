@@ -4,6 +4,7 @@ import { terrainHeight } from "./terrain";
 import type { PreparedModel } from "./assets";
 import { getActiveMap } from "./maps";
 import type { Obstacle } from "./collisions";
+import { BUILDING_COLLISION_RADIUS } from "./collisions";
 import {
   BLOCK,
   SIDEWALK_OFF,
@@ -51,6 +52,7 @@ export interface CitySystem {
   streetlights: THREE.InstancedMesh;
   update: (px: number, pz: number, nightFactor: number) => void;
   getObstacles: () => Obstacle[];
+  getBuildingObstacles: () => Obstacle[];
   setQuality: (q: QualityTier) => void;
   upgradeLamppost: (model: PreparedModel) => void;
   dispose: () => void;
@@ -140,6 +142,7 @@ export const createCity = (
   hidden.updateMatrix();
 
   const lampRecords: LampRecord[] = [];
+  const buildingObstacles: Obstacle[] = [];
   let activeLampCount = 0;
   let lastUpdate = { x: 99999, z: 99999 };
   let nightFactorStored = 0;
@@ -276,16 +279,17 @@ export const createCity = (
     windowMat.opacity = 0.8 + nightFactor * 0.08;
     lampMat.emissiveIntensity = 0.02 + nightFactor * 0.8;
 
-    const needsRebuild = Math.hypot(px - lastUpdate.x, pz - lastUpdate.z) >= 30;
+    const needsRebuild = Math.hypot(px - lastUpdate.x, pz - lastUpdate.z) >= 72;
     if (needsRebuild) {
       lastUpdate = { x: px, z: pz };
       lampRecords.length = 0;
+      buildingObstacles.length = 0;
 
       let li = 0;
-      const gx0 = gridCoord(px) - 2;
-      const gx1 = gridCoord(px) + 2;
-      const gz0 = gridCoord(pz) - 2;
-      const gz1 = gridCoord(pz) + 2;
+      const gx0 = gridCoord(px) - 3;
+      const gx1 = gridCoord(px) + 3;
+      const gz0 = gridCoord(pz) - 3;
+      const gz1 = gridCoord(pz) + 3;
 
       for (let gx = gx0; gx <= gx1; gx++) {
         for (let gz = gz0; gz <= gz1; gz++) {
@@ -368,6 +372,11 @@ export const createCity = (
               const winIdx = { value: wi };
               placeWindowGrid(wx, wz, gy + podiumH, towerH, towerW, nx, nz, facadeSide, towerD, nightFactor, winIdx);
               wi = winIdx.value;
+              buildingObstacles.push({
+                x: wx,
+                z: wz,
+                r: BUILDING_COLLISION_RADIUS * (0.75 + hash(wx + wz) * 0.35),
+              });
               bi++;
             }
           }
@@ -428,6 +437,8 @@ export const createCity = (
   const getObstacles = (): Obstacle[] =>
     lampRecords.map((r) => ({ x: r.x, z: r.z, r: 0.42 }));
 
+  const getBuildingObstacles = (): Obstacle[] => buildingObstacles;
+
   return {
     group,
     buildingMesh,
@@ -435,6 +446,7 @@ export const createCity = (
     streetlights,
     update,
     getObstacles,
+    getBuildingObstacles,
     setQuality,
     upgradeLamppost,
     dispose,
