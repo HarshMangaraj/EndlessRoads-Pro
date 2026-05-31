@@ -8,6 +8,7 @@ export interface PostFxSystem {
   render: () => void;
   setSize: (w: number, h: number) => void;
   setBloom: (strength: number, nightFactor?: number) => void;
+  setEnabled: (enabled: boolean) => void;
   dispose: () => void;
 }
 
@@ -70,6 +71,9 @@ export const createPostFx = (
       bloom.strength = base * nightBoost;
       bloom.radius = 0.3 + nightFactor * 0.1;
       bloom.threshold = THREE.MathUtils.lerp(0.9, 0.75, nightFactor);
+    },
+    setEnabled: (enabled: boolean) => {
+      useComposer = enabled;
     },
     dispose: () => composer.dispose(),
   };

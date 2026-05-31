@@ -95,7 +95,8 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
   }
 
   const peds: Pedestrian[] = Array.from({ length: PED_COUNT }, (_, i) => ({
-    gx: 0, gz: 0,
+    gx: Math.round((hash(i * 7.3) - 0.5) * 6),
+    gz: Math.round((hash(i * 13.1) - 0.5) * 6),
     axis: hash(i * 3.1) > 0.5 ? "ns" : "ew" as "ns" | "ew",
     t: (hash(i * 11) - 0.5) * BLOCK * 0.75,
     speed: 0.9 + hash(i * 17) * 0.9,
@@ -122,8 +123,11 @@ export const createPedestrians = (scene: THREE.Scene): PedestrianSystem => {
 
     for (let i = 0; i < peds.length && count < PED_COUNT; i++) {
       const p = peds[i];
-      p.gx = baseGx + Math.round((hash(i * 7.1) - 0.5) * 6);
-      p.gz = baseGz + Math.round((hash(i * 11.3) - 0.5) * 6);
+      if (Math.abs(p.gx - baseGx) > 4 || Math.abs(p.gz - baseGz) > 4) {
+        p.gx = baseGx + Math.round((hash(i * 7.3 + baseGx * 0.1) - 0.5) * 8);
+        p.gz = baseGz + Math.round((hash(i * 13.1 + baseGz * 0.1) - 0.5) * 8);
+        p.t = (hash(i * 11 + baseGx + baseGz) - 0.5) * BLOCK * 0.75;
+      }
 
       const d = densityAt(p.gx, p.gz);
       if (d < 0.15 && hash(i * 13.7 + baseGx) > 0.85) {

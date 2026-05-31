@@ -173,7 +173,7 @@ export const createCity = (
       .sort((a, b) => a.dist - b.dist);
 
     const poolCount = Math.min(lightPoolSize, sorted.length);
-    const baseI = qualityTier === "ultra" ? 26 : qualityTier === "high" ? 22 : 16;
+    const baseI = qualityTier === "ultra" ? 9 : qualityTier === "high" ? 7 : 5;
     const intensity = baseI * nightFactorStored;
 
     for (let i = 0; i < lampPoints.length; i++) {

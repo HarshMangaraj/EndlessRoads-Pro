@@ -9,7 +9,7 @@ import {
   TILE_SIZE, TILE_GRID,
   CLOUD_COUNT, CIRRUS_COUNT, RAIN_COUNT, SNOW_COUNT, STAR_COUNT,
   VEG_RADIUS, VEG_CELL,
-  MAX_SPEED, TWO_PI,
+  MAX_SPEED, MAX_SPEED_REV, TWO_PI,
 } from "./constants";
 import {
   terrainHeight, biomeWeightsAt, dominantBiome,
@@ -303,135 +303,7 @@ export default function DrivingGame() {
     seaMesh.receiveShadow = true;
     scene.add(seaMesh);
 
-    // ── Road geometry helpers ─────────────────────────────────────────────────
-    const makeRoadGeo = () => {
-      const g   = new THREE.BufferGeometry();
-      const pos = new Float32Array(ROAD_TOTAL * 3);
-      const uv  = new Float32Array(ROAD_TOTAL * 2);
-      const idx: number[] = [];
-      for (let i = 0; i < ROAD_SEGS; i++) {
-        const a = i * 2;
-        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-      }
-      g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-      g.setIndex(idx);
-      g.computeVertexNormals();
-      return g;
-    };
 
-    const roadGeo     = makeRoadGeo();
-    const shoulderGeo = makeRoadGeo();
-    const clGeo       = makeRoadGeo();
-    const laneGeoL    = makeRoadGeo();
-    const laneGeoR    = makeRoadGeo();
-
-    const roadMat    = new THREE.MeshStandardMaterial({
-      color: mapInit.roadColor, roughness: 0.72, metalness: 0.12,
-    });
-    const shoulderMat= new THREE.MeshStandardMaterial({
-      color: mapInit.shoulderColor, roughness: 0.96, metalness: 0.04,
-    });
-    const clMat      = new THREE.MeshStandardMaterial({
-      color: 0xf1d873, emissive: new THREE.Color(0xf1d873), emissiveIntensity: 0.1, roughness: 0.6,
-    });
-    const laneMat    = new THREE.MeshStandardMaterial({
-      color: 0xffffff, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.06, roughness: 0.75,
-    });
-
-    // Old spline-road meshes kept for disposal but hidden — grid road renderer takes over
-    const oldRoadMeshes = [
-      new THREE.Mesh(shoulderGeo, shoulderMat),
-      new THREE.Mesh(roadGeo, roadMat),
-      new THREE.Mesh(clGeo, clMat),
-      new THREE.Mesh(laneGeoL, laneMat),
-      new THREE.Mesh(laneGeoR, laneMat),
-    ];
-    oldRoadMeshes.forEach(m => { m.visible = false; scene.add(m); });
-
-    const updateRoad = (vs: VehicleState) => {
-      const start = vs.s - 40;
-      const p  = roadGeo.getAttribute("position") as THREE.BufferAttribute;
-      const u  = roadGeo.getAttribute("uv") as THREE.BufferAttribute;
-      const sp = shoulderGeo.getAttribute("position") as THREE.BufferAttribute;
-      const cl = clGeo.getAttribute("position") as THREE.BufferAttribute;
-      const ll = laneGeoL.getAttribute("position") as THREE.BufferAttribute;
-      const lr = laneGeoR.getAttribute("position") as THREE.BufferAttribute;
-
-      for (let i = 0; i <= ROAD_SEGS; i++) {
-        const s    = start + i * ROAD_STEP;
-        const samp = samplePath(s);
-        const n    = normalFromH(samp.h);
-        const ry   = Math.max(0, terrainHeight(samp.x, samp.z)) + 0.06;
-
-        p.setXYZ(i * 2,     samp.x + n.x * RW, ry,        samp.z + n.z * RW);
-        p.setXYZ(i * 2 + 1, samp.x - n.x * RW, ry,        samp.z - n.z * RW);
-        u.setXY(i * 2, 0, s * 0.04);
-        u.setXY(i * 2 + 1, 1, s * 0.04);
-
-        const sw = RW + 2.6;
-        sp.setXYZ(i * 2,     samp.x + n.x * sw, ry - 0.02, samp.z + n.z * sw);
-        sp.setXYZ(i * 2 + 1, samp.x - n.x * sw, ry - 0.02, samp.z - n.z * sw);
-
-        const clw = Math.floor(s / 5) % 2 === 0 ? 0.11 : 0;
-        cl.setXYZ(i * 2,     samp.x + n.x * clw, ry + 0.028, samp.z + n.z * clw);
-        cl.setXYZ(i * 2 + 1, samp.x - n.x * clw, ry + 0.028, samp.z - n.z * clw);
-
-        const hw = RW * 0.62;
-        const ld = Math.floor(s / 8) % 2 === 0 ? 0.09 : 0;
-        ll.setXYZ(i * 2,     samp.x + n.x * (hw + ld), ry + 0.02, samp.z + n.z * (hw + ld));
-        ll.setXYZ(i * 2 + 1, samp.x + n.x * (hw - ld), ry + 0.02, samp.z + n.z * (hw - ld));
-        lr.setXYZ(i * 2,     samp.x - n.x * (hw + ld), ry + 0.02, samp.z - n.z * (hw + ld));
-        lr.setXYZ(i * 2 + 1, samp.x - n.x * (hw - ld), ry + 0.02, samp.z - n.z * (hw - ld));
-      }
-      [p, u, sp, cl, ll, lr].forEach(a => { a.needsUpdate = true; });
-      [roadGeo, shoulderGeo, clGeo, laneGeoL, laneGeoR].forEach(g => {
-        g.computeVertexNormals();
-        g.computeBoundingSphere();
-      });
-    };
-
-    // ── Guardrails ────────────────────────────────────────────────────────────
-    const railMat = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, metalness: 0.85, roughness: 0.2 });
-    const makeRailGeo = () => {
-      const g   = new THREE.BufferGeometry();
-      const pos = new Float32Array(RAIL_TOTAL * 3);
-      const idx: number[] = [];
-      for (let i = 0; i < RAIL_SEGS; i++) {
-        const a = i * 2;
-        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-      }
-      g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      g.setIndex(idx);
-      g.computeVertexNormals();
-      return g;
-    };
-    const railGeoL = makeRailGeo(), railGeoR = makeRailGeo();
-    const railMeshL = new THREE.Mesh(railGeoL, railMat);
-    const railMeshR = new THREE.Mesh(railGeoR, railMat);
-    railMeshL.visible = false; railMeshR.visible = false;
-    scene.add(railMeshL); scene.add(railMeshR);
-
-    const updateGuardrails = (vs: VehicleState) => {
-      const start = vs.s - 20;
-      const posL  = railGeoL.getAttribute("position") as THREE.BufferAttribute;
-      const posR  = railGeoR.getAttribute("position") as THREE.BufferAttribute;
-      for (let i = 0; i <= RAIL_SEGS; i++) {
-        const s    = start + i * RAIL_STEP;
-        const samp = samplePath(s);
-        const n    = normalFromH(samp.h);
-        const ry   = Math.max(0, terrainHeight(samp.x, samp.z)) + 0.68;
-        const ow   = RW + 3.4;
-        posL.setXYZ(i * 2,     samp.x + n.x * ow, ry,        samp.z + n.z * ow);
-        posL.setXYZ(i * 2 + 1, samp.x + n.x * ow, ry + 0.32, samp.z + n.z * ow);
-        posR.setXYZ(i * 2,     samp.x - n.x * ow, ry,        samp.z - n.z * ow);
-        posR.setXYZ(i * 2 + 1, samp.x - n.x * ow, ry + 0.32, samp.z - n.z * ow);
-      }
-      posL.needsUpdate = true;
-      posR.needsUpdate = true;
-      railGeoL.computeBoundingSphere();
-      railGeoR.computeBoundingSphere();
-    };
 
     // ── Clouds — 3-layer volumetric puff clusters + high cirrus ──────────────
     const cloudSphereGeo = new THREE.SphereGeometry(1, 8, 6);
@@ -480,6 +352,9 @@ export default function DrivingGame() {
       cloudMat.opacity  += (tgt          - cloudMat.opacity)  * 0.05;
       cloudMatB.opacity += (tgt * 0.80   - cloudMatB.opacity) * 0.05;
       cloudMatC.opacity += (tgt * 0.65   - cloudMatC.opacity) * 0.05;
+      if (cloudMat.opacity < 0.005) cloudMat.opacity = 0;
+      if (cloudMatB.opacity < 0.005) cloudMatB.opacity = 0;
+      if (cloudMatC.opacity < 0.005) cloudMatC.opacity = 0;
 
       for (let i = 0; i < CLOUD_COUNT; i++) {
         const o  = cloudOffsets[i];
@@ -654,12 +529,20 @@ export default function DrivingGame() {
       const pr = q === "low" ? 1 : q === "medium" ? 1.25 : q === "high" ? 1.5 : 2;
       renderer.setPixelRatio(Math.min(devicePixelRatio, pr));
       const shadowSize = q === "low" ? 1024 : q === "medium" ? 2048 : 4096;
+      if (dirLight.shadow.map) {
+        dirLight.shadow.map.dispose();
+        (dirLight.shadow as any).map = null;
+      }
       dirLight.shadow.mapSize.set(shadowSize, shadowSize);
       const ext = q === "low" ? 90 : 130;
       dirLight.shadow.camera.left = dirLight.shadow.camera.bottom = -ext;
       dirLight.shadow.camera.right = dirLight.shadow.camera.top = ext;
+      dirLight.shadow.camera.updateProjectionMatrix();
       tileRes = tileResForQuality(q);
       city?.setQuality(q);
+      if (postFxRef) {
+        postFxRef.setEnabled(q !== "low");
+      }
     };
     applyQualitySettings(qualityRef.current);
     worldApiRef.current.applyQuality = applyQualitySettings;
@@ -709,6 +592,7 @@ export default function DrivingGame() {
     const updateRain = (vs: VehicleState, wx: string, dt: number) => {
       const active = wx === "rain" || wx === "thunder";
       rainMat.opacity += (active ? 0.55 : -rainMat.opacity) * 0.1;
+      if (rainMat.opacity < 0.005) rainMat.opacity = 0;
       if (!active) return;
       rainLines.position.x = vs.worldPos.x;
       rainLines.position.z = vs.worldPos.z;
@@ -743,6 +627,7 @@ export default function DrivingGame() {
     const updateSnow = (vs: VehicleState, bwArr: BiomeWeights, dt: number) => {
       const snowing = bwArr.tundra > 0.4;
       snowFlakeMat.opacity += (snowing ? 0.72 : -snowFlakeMat.opacity) * 0.05;
+      if (snowFlakeMat.opacity < 0.005) snowFlakeMat.opacity = 0;
       if (!snowing) return;
       snowPoints.position.x = vs.worldPos.x; snowPoints.position.z = vs.worldPos.z;
       const arr = snowFlakeGeo.attributes.position.array as Float32Array;
@@ -777,22 +662,24 @@ export default function DrivingGame() {
     const carGroup  = new THREE.Group();
     scene.add(carGroup);
 
-    const makePart = (geo: THREE.BufferGeometry, color: number, metalness: number, roughness: number, emissive?: number, emInt = 0) => {
-      const mat = new THREE.MeshStandardMaterial({ color, metalness, roughness });
+    const makePart = (geo: THREE.BufferGeometry, color: number, metalness: number, roughness: number, emissive?: number, emInt = 0, isBody = false) => {
+      const mat = isBody 
+        ? new THREE.MeshPhysicalMaterial({ color, metalness, roughness, clearcoat: 1.0, clearcoatRoughness: 0.05 })
+        : new THREE.MeshStandardMaterial({ color, metalness, roughness });
       if (emissive !== undefined) { mat.emissive = new THREE.Color(emissive); mat.emissiveIntensity = emInt; }
       const m = new THREE.Mesh(geo, mat); m.castShadow = true; return m;
     };
 
-    const bodyBot     = makePart(new THREE.BoxGeometry(1.92, 0.38, 4.55), 0xb3261e, 0.72, 0.22); bodyBot.position.set(0, 0.5, 0);
-    const bodyMid     = makePart(new THREE.BoxGeometry(1.84, 0.28, 3.82), 0xb3261e, 0.70, 0.22); bodyMid.position.set(0, 0.72, -0.1);
+    const bodyBot     = makePart(new THREE.BoxGeometry(1.92, 0.38, 4.55), 0xb3261e, 0.6, 0.1, undefined, 0, true); bodyBot.position.set(0, 0.5, 0);
+    const bodyMid     = makePart(new THREE.BoxGeometry(1.84, 0.28, 3.82), 0xb3261e, 0.6, 0.1, undefined, 0, true); bodyMid.position.set(0, 0.72, -0.1);
     const bodyTop     = makePart(new THREE.BoxGeometry(1.56, 0.5, 2.22),  0x181818, 0.45, 0.16); bodyTop.position.set(0, 1.1, -0.2);
-    const hood        = makePart(new THREE.BoxGeometry(1.8, 0.18, 1.42),  0xb3261e, 0.68, 0.22); hood.position.set(0, 0.68, 1.22); hood.rotation.x = 0.12;
+    const hood        = makePart(new THREE.BoxGeometry(1.8, 0.18, 1.42),  0xb3261e, 0.6, 0.1, undefined, 0, true); hood.position.set(0, 0.68, 1.22); hood.rotation.x = 0.12;
     const bumperF     = makePart(new THREE.BoxGeometry(1.86, 0.22, 0.32), 0x1a1a1c, 0.32, 0.68); bumperF.position.set(0, 0.38, 2.27);
     const bumperR     = makePart(new THREE.BoxGeometry(1.86, 0.22, 0.32), 0x1a1a1c, 0.32, 0.68); bumperR.position.set(0, 0.38, -2.27);
     const skirtL      = makePart(new THREE.BoxGeometry(0.08, 0.18, 3.82), 0x101010, 0.42, 0.55); skirtL.position.set(0.97, 0.42, -0.1);
     const skirtR      = makePart(new THREE.BoxGeometry(0.08, 0.18, 3.82), 0x101010, 0.42, 0.55); skirtR.position.set(-0.97, 0.42, -0.1);
     const spoilerBase = makePart(new THREE.BoxGeometry(1.72, 0.08, 0.5),  0x111111, 0.5, 0.5); spoilerBase.position.set(0, 1.08, -2.12);
-    const spoilerWing = makePart(new THREE.BoxGeometry(1.72, 0.22, 0.07), 0xb3261e, 0.68, 0.26); spoilerWing.position.set(0, 1.22, -2.12);
+    const spoilerWing = makePart(new THREE.BoxGeometry(1.72, 0.22, 0.07), 0xb3261e, 0.6, 0.1, undefined, 0, true); spoilerWing.position.set(0, 1.22, -2.12);
     const paintedParts: THREE.Mesh[] = [bodyBot, bodyMid, hood, spoilerWing];
 
     const hlMat = new THREE.MeshStandardMaterial({ color: 0xfffbe4, emissive: new THREE.Color(0xfff1a0), emissiveIntensity: 1.4, metalness: 0.35, roughness: 0.08 });
@@ -803,14 +690,14 @@ export default function DrivingGame() {
     const tlL   = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.17, 0.05), tlMat); tlL.position.set(0.72, 0.7, -2.26);
     const tlR   = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.17, 0.05), tlMat); tlR.position.set(-0.72, 0.7, -2.26);
 
-    const winMat = new THREE.MeshStandardMaterial({ color: 0x1a2838, metalness: 0.68, roughness: 0.04, transparent: true, opacity: 0.72 });
+    const winMat = new THREE.MeshPhysicalMaterial({ color: 0x050505, metalness: 0.9, roughness: 0.05, transmission: 0.7, ior: 1.5, transparent: true, opacity: 1 });
     const winF   = new THREE.Mesh(new THREE.BoxGeometry(1.46, 0.38, 0.06), winMat); winF.position.set(0, 1.12, 0.83); winF.rotation.x = 0.15;
     const winRear= new THREE.Mesh(new THREE.BoxGeometry(1.46, 0.35, 0.06), winMat); winRear.position.set(0, 1.12, -0.66); winRear.rotation.x = -0.1;
 
     const wheelGeo = new THREE.CylinderGeometry(0.43, 0.43, 0.36, 22);
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.92 });
     const rimGeo   = new THREE.CylinderGeometry(0.26, 0.26, 0.38, 14);
-    const rimMat   = new THREE.MeshStandardMaterial({ color: 0xc8c8c8, metalness: 0.92, roughness: 0.12 });
+    const rimMat   = new THREE.MeshStandardMaterial({ color: 0xeeeeee, metalness: 0.95, roughness: 0.15 });
     const wheelPivots: THREE.Object3D[] = [];
     ([[1.04, 0.38, 1.52, true], [-1.04, 0.38, 1.52, true], [1.04, 0.38, -1.47, false], [-1.04, 0.38, -1.47, false]] as [number, number, number, boolean][]).forEach(([x, y, z, steer]) => {
       const pivot = new THREE.Object3D();
@@ -901,6 +788,16 @@ export default function DrivingGame() {
       };
     }
 
+    // ── Reusable objects to prevent GC pressure ──
+    const tmpVec1 = new THREE.Vector3();
+    const tmpVec2 = new THREE.Vector3();
+    const tmpColor1 = new THREE.Color();
+    const tmpColor2 = new THREE.Color();
+    const tmpColor3 = new THREE.Color();
+    const tmpColor4 = new THREE.Color();
+    const tmpColor5 = new THREE.Color();
+    const tmpColor6 = new THREE.Color();
+
     // ── Animation loop ────────────────────────────────────────────────────────
     let lastTime = 0, animId = 0;
 
@@ -956,15 +853,42 @@ export default function DrivingGame() {
       const onPavement = isOnRoad(vs.worldPos.x, vs.worldPos.z, ROAD_HALF + 0.8);
       const surfaceGrip = onPavement ? 1 : 0.42;
 
-      const accelForce   = gasOn ? 9 * torqueFactor * surfaceGrip : 0;
-      const brakeForce   = brakeOn ? 11 : 0;
-      const handbrake    = spaceOn ? 5.5 : 0;
-      const sign         = vs.speed >= 0 ? 1 : -1;
+      const movingForward  = vs.speed > 0.3;
+      const movingBackward = vs.speed < -0.3;
+      const stopped        = !movingForward && !movingBackward;
 
-      vs.speed += (accelForce - brakeForce * sign) * dt;
+      let accelForce = 0;
+      let brakeForce = 0;
+
+      if (gasOn && !brakeOn) {
+        if (movingBackward) {
+          // Gas while reversing = front brake (slow down toward 0)
+          brakeForce = 11;
+        } else {
+          // Normal forward acceleration
+          accelForce = 9 * torqueFactor * surfaceGrip;
+        }
+      } else if (brakeOn && !gasOn) {
+        if (movingForward) {
+          // Normal brake while moving forward
+          brakeForce = 11;
+        } else {
+          // Stopped or already reversing: accelerate backward
+          accelForce = -5 * surfaceGrip;
+        }
+      }
+
+      const handbrake = spaceOn ? 5.5 : 0;
+      const sign      = vs.speed >= 0 ? 1 : -1;
+
+      vs.speed += accelForce * dt;
+      vs.speed -= brakeForce * sign * dt;
       vs.speed -= handbrake * sign * dt;
+      // Friction / drag
       vs.speed *= 1 - dt * (0.22 + (spaceOn ? 0.14 : 0) + (onPavement ? 0 : 0.35));
-      vs.speed  = Math.max(-MAX_SPEED * 0.32, Math.min(MAX_SPEED, vs.speed));
+      // Snap to zero if nearly stopped and no input
+      if (Math.abs(vs.speed) < 0.15 && !gasOn && !brakeOn) vs.speed = 0;
+      vs.speed  = Math.max(-MAX_SPEED_REV, Math.min(MAX_SPEED, vs.speed));
 
       // Gear
       vs.gear = spd < 8 ? 1 : spd < 22 ? 2 : spd < 42 ? 3 : spd < 68 ? 4 : spd < 98 ? 5 : 6;
@@ -1043,7 +967,7 @@ export default function DrivingGame() {
         camera.fov += (camFOV - camera.fov) * dt * 4;
         camera.updateProjectionMatrix();
       }
-      const desired = new THREE.Vector3(
+      const desired = tmpVec1.set(
         vs.worldPos.x - Math.sin(camH) * camDist,
         vs.worldPos.y + camHeight,
         vs.worldPos.z - Math.cos(camH) * camDist,
@@ -1052,8 +976,10 @@ export default function DrivingGame() {
       camera.position.copy(camPos);
 
       const lookDist = camMode === "cinematic" ? 32 : 18;
-      const la = samplePath(lookDist);
-      camTarget.lerp(new THREE.Vector3(la.x, vs.worldPos.y + 1.2, la.z), Math.min(1, dt * 8));
+      const lookH = vs.heading + vs.wheelAngle * 0.8 + vs.slipAngle * 0.5;
+      const lookX = vs.worldPos.x + Math.sin(lookH) * lookDist;
+      const lookZ = vs.worldPos.z + Math.cos(lookH) * lookDist;
+      camTarget.lerp(tmpVec2.set(lookX, vs.worldPos.y + 1.2, lookZ), Math.min(1, dt * 8));
       camera.lookAt(camTarget);
 
       // ── Sky / Lighting ───────────────────────────────────────────────────
@@ -1072,9 +998,9 @@ export default function DrivingGame() {
       zenithUniform.setHex(map.skyZenith);
       horizonUniform.setHex(map.skyHorizon);
 
-      const fogC = new THREE.Color(0x06121f).lerp(new THREE.Color(map.fogColor), daylight);
-      if (wx === "rain" || wx === "thunder") fogC.lerp(new THREE.Color(0x4e5c68), 0.55);
-      if (wx === "cloudy") fogC.lerp(new THREE.Color(0x96a2ad), 0.42);
+      const fogC = tmpColor1.setHex(0x06121f).lerp(tmpColor2.setHex(map.fogColor), daylight);
+      if (wx === "rain" || wx === "thunder") fogC.lerp(tmpColor2.setHex(0x4e5c68), 0.55);
+      if (wx === "cloudy") fogC.lerp(tmpColor2.setHex(0x96a2ad), 0.42);
 
       const sunDist = 850;
       const isVisible = sun.y > -0.05;
@@ -1082,9 +1008,9 @@ export default function DrivingGame() {
       sunGlow.position.copy(sunMesh.position);
       sunMesh.visible = sunGlow.visible = isVisible;
       // Tint sun from orange (dawn/dusk) to white (noon)
-      const sunTint = new THREE.Color(0xff8833).lerp(new THREE.Color(0xfffde8), THREE.MathUtils.clamp(elev * 3, 0, 1));
+      const sunTint = tmpColor2.setHex(0xff8833).lerp(tmpColor3.setHex(0xfffde8), THREE.MathUtils.clamp(elev * 3, 0, 1));
       (sunMesh.material as THREE.MeshBasicMaterial).color.copy(sunTint);
-      (sunGlow.material as THREE.MeshBasicMaterial).color.setHex(0xff7700).lerp(new THREE.Color(0xffddaa), THREE.MathUtils.clamp(elev * 3, 0, 1));
+      (sunGlow.material as THREE.MeshBasicMaterial).color.setHex(0xff7700).lerp(tmpColor3.setHex(0xffddaa), THREE.MathUtils.clamp(elev * 3, 0, 1));
       const moonDir = sun.clone().negate();
       moonMesh.position.set(vs.worldPos.x + moonDir.x * sunDist, vs.worldPos.y + moonDir.y * sunDist, vs.worldPos.z + moonDir.z * sunDist);
       moonMesh.visible = moonDir.y > 0.05;
@@ -1104,8 +1030,8 @@ export default function DrivingGame() {
       scene.background = sceneBgColor;
 
       const warm = map.sunWarmth;
-      const sunColor = new THREE.Color(0xff6600).lerp(
-        new THREE.Color(0xfff4e0),
+      const sunColor = tmpColor4.setHex(0xff6600).lerp(
+        tmpColor5.setHex(0xfff4e0),
         THREE.MathUtils.clamp(elev * 2.5 * warm, 0, 1),
       );
       dirLight.intensity = daylight * 2.5 * overcast + flashAmt * 9;
@@ -1117,25 +1043,19 @@ export default function DrivingGame() {
       ambLight.intensity  = 0.22 + daylight * 0.32 * overcast + nightFactor * 0.06;
       hemiLight.intensity = 0.38 + daylight * 0.48 * overcast + nightFactor * 0.1;
       const twilightBias = THREE.MathUtils.clamp(1 - Math.abs(elev) * 5, 0, 1);
-      hemiLight.color.set(new THREE.Color(0x9ec4ff).lerp(new THREE.Color(0xffb07a), twilightBias * daylight));
-      hemiLight.groundColor.set(new THREE.Color(0x101820).lerp(new THREE.Color(0x5a4830), daylight));
+      hemiLight.color.copy(tmpColor5.setHex(0x9ec4ff).lerp(tmpColor6.setHex(0xffb07a), twilightBias * daylight));
+      hemiLight.groundColor.copy(tmpColor5.setHex(0x101820).lerp(tmpColor6.setHex(0x5a4830), daylight));
 
-      groundMat.color = new THREE.Color().setScalar(THREE.MathUtils.lerp(1, 0.42, nightFactor));
+      groundMat.color.setScalar(THREE.MathUtils.lerp(1, 0.42, nightFactor));
       cityNightLight.intensity = nightFactor * 0.18;
-      cityNightLight.color.set(new THREE.Color(0x1a2a40).lerp(new THREE.Color(0x3050a0), nightFactor * 0.5));
-      cityNightLight.groundColor.set(new THREE.Color(0x080808));
+      cityNightLight.color.copy(tmpColor5.setHex(0x1a2a40).lerp(tmpColor6.setHex(0x3050a0), nightFactor * 0.5));
+      cityNightLight.groundColor.setHex(0x080808);
 
       const bloomNight = map.bloomStrength;
       postFx.setBloom(bloomNight, nightFactor);
 
       // Road wetness: shiny road in rain — brighter under street lamps at night
       const isWet = wx === "rain" || wx === "thunder";
-      const nightWetRough = isWet ? 0.18 : nightFactor > 0.4 ? 0.42 : 0.78;
-      const nightWetMetal = isWet ? 0.52 : nightFactor > 0.4 ? 0.28 : 0.08;
-      (roadMat as THREE.MeshStandardMaterial).roughness  += (nightWetRough - (roadMat as THREE.MeshStandardMaterial).roughness)  * dt * 1.8;
-      (roadMat as THREE.MeshStandardMaterial).metalness  += (nightWetMetal - (roadMat as THREE.MeshStandardMaterial).metalness)  * dt * 1.8;
-      (clMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.1 + nightFactor * 0.35;
-      (laneMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.06 + nightFactor * 0.22;
 
       const fogExp    = scene.fog as THREE.FogExp2;
       const fogBase   = wx === "rain" || wx === "thunder" ? 0.016 : wx === "cloudy" ? 0.009 : map.fogDensity;
@@ -1150,7 +1070,7 @@ export default function DrivingGame() {
       headL.position.set(vs.worldPos.x + fwdX * 2.4 + sideX * 0.76, vs.worldPos.y + 0.92, vs.worldPos.z + fwdZ * 2.4 + sideZ * 0.76);
       headR.position.set(vs.worldPos.x + fwdX * 2.4 - sideX * 0.76, vs.worldPos.y + 0.92, vs.worldPos.z + fwdZ * 2.4 - sideZ * 0.76);
       headTarget.position.set(vs.worldPos.x + fwdX * 32, vs.worldPos.y + 0.4, vs.worldPos.z + fwdZ * 32);
-      headL.intensity = headR.intensity = hlOn ? 72 : 0;
+      headL.intensity = headR.intensity = hlOn ? 16 : 0;
       hlL.material.emissiveIntensity = hlOn ? 2.8 : 0.32;
       hlR.material.emissiveIntensity = hlOn ? 2.8 : 0.32;
 
@@ -1171,7 +1091,7 @@ export default function DrivingGame() {
       }
 
       // World updates
-      roadRenderer.update(vs.worldPos.x, vs.worldPos.z, nightFactor);
+      roadRenderer.update(vs.worldPos.x, vs.worldPos.z, nightFactor, isWet, dt);
       intersections.update(vs.worldPos.x, vs.worldPos.z, gameTimeSec);
       pedestrians.update(vs.worldPos.x, vs.worldPos.z, dt, gameTimeSec);
       updateGroundTiles(vs.worldPos.x, vs.worldPos.z);
@@ -1199,7 +1119,11 @@ export default function DrivingGame() {
         vs.speed *= Math.max(impact, 1 - dt * 6);
         if (gameTimeSec - lastCollisionAt > 0.35) {
           lastCollisionAt = gameTimeSec;
-          suspVel += 0.12;
+          suspVel += 0.22;
+          gameAudio.playCrash(1.0 - impact);
+          camPos.x += (Math.random() - 0.5) * 1.2;
+          camPos.y += (Math.random() - 0.5) * 1.2;
+          camPos.z += (Math.random() - 0.5) * 1.2;
         }
       }
 

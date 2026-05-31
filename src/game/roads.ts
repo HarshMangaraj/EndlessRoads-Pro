@@ -13,7 +13,7 @@ import {
 const GRID_RADIUS = 5;
 
 export interface RoadRenderer {
-  update: (px: number, pz: number, nightFactor: number) => void;
+  update: (px: number, pz: number, nightFactor: number, isWet: boolean, dt: number) => void;
   dispose: () => void;
 }
 
@@ -155,9 +155,17 @@ export const createRoadRenderer = (scene: THREE.Scene): RoadRenderer => {
     }
   };
 
-  const update = (px: number, pz: number, nightFactor: number) => {
+  const update = (px: number, pz: number, nightFactor: number, isWet: boolean, dt: number) => {
     const nf = Math.max(0, Math.min(1, nightFactor));
+    
+    const nightWetRough = isWet ? 0.18 : nf > 0.4 ? 0.42 : 0.78;
+    const nightWetMetal = isWet ? 0.52 : nf > 0.4 ? 0.28 : 0.08;
+    roadMat.roughness += (nightWetRough - roadMat.roughness) * dt * 1.8;
+    roadMat.metalness += (nightWetMetal - roadMat.metalness) * dt * 1.8;
     roadMat.emissiveIntensity = 0.06 + nf * 0.22;
+
+    markMat.emissiveIntensity = 0.1 + nf * 0.35;
+    zebraMat.emissiveIntensity = 0.06 + nf * 0.22;
 
     const centerGx = gridCoord(px);
     const centerGz = gridCoord(pz);

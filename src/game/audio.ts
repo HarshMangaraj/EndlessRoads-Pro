@@ -19,6 +19,7 @@ export interface GameAudio {
   update: (state: AudioUpdateState) => void;
   setMuted: (muted: boolean) => void;
   isMuted: () => boolean;
+  playCrash: (impact: number) => void;
   dispose: () => void;
 }
 
@@ -359,10 +360,10 @@ export const createGameAudio = (): GameAudio => {
         playRainDrop(ac, master);
       }
 
-      if (state.thunderFlash > 0.8 && state.thunderFlash > lastThunder + 0.5 && !muted) {
-        lastThunder = state.thunderFlash;
+      if (state.thunderFlash > 0.8 && lastThunder < 0.2 && !muted) {
         playThunder(ac, master);
       }
+      lastThunder = state.thunderFlash;
 
       birdTimer -= state.dt;
       if (birdTimer <= 0 && isDay && !isRain && !muted) {
@@ -406,12 +407,18 @@ export const createGameAudio = (): GameAudio => {
     dispose: () => {
       zenOscs.forEach(o => { try { o.stop(); } catch { /* */ } });
       rainSrc?.stop();
-      engineOsc?.stop();
-      ctx?.close();
-      ctx = null;
+      if (master && ctx) {
+        master.disconnect();
+        ctx.close();
+      }
       master = null;
       zenGain = null;
       zenOscs = [];
+    },
+    playCrash: (impact: number) => {
+      if (ctx && master && !muted) {
+        playCrashFn(ctx, master, impact);
+      }
     },
   };
 };
